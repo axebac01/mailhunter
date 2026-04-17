@@ -23,6 +23,32 @@ const CONTACT_PAGE_PATHS = ["contact", "contacts"] as const;
 const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
 const tickers = new Map<string, number>();
+const importedCompanyCache = new Map<string, { ids: string[]; ticksSinceRefresh: number }>();
+
+async function getUploadedJobCompanies(jobId: string): Promise<string[] | null> {
+  const cached = importedCompanyCache.get(jobId);
+  if (cached && cached.ticksSinceRefresh < 10) {
+    cached.ticksSinceRefresh++;
+    return cached.ids;
+  }
+  const { data: imports } = await supabase
+    .from("imports")
+    .select("id")
+    .eq("crawl_job_id", jobId);
+  const importIds = (imports ?? []).map((i: any) => i.id);
+  if (importIds.length === 0) {
+    importedCompanyCache.set(jobId, { ids: [], ticksSinceRefresh: 0 });
+    return [];
+  }
+  const { data: rows } = await supabase
+    .from("import_rows")
+    .select("matched_company_id")
+    .in("import_id", importIds)
+    .not("matched_company_id", "is", null);
+  const ids = Array.from(new Set((rows ?? []).map((r: any) => r.matched_company_id).filter(Boolean)));
+  importedCompanyCache.set(jobId, { ids, ticksSinceRefresh: 0 });
+  return ids;
+}
 
 export function startSimulator(jobId: string) {
   if (tickers.has(jobId)) return;
