@@ -25,12 +25,20 @@ export default function JobDetail() {
   const qc = useQueryClient();
 
   const job = useQuery({ queryKey: ["job", id], queryFn: () => api.getJob(id), refetchInterval: 2500 });
+  const allJobs = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
   const allContacts = useQuery({ queryKey: ["contacts"], queryFn: () => api.listContacts(), refetchInterval: 2500 });
   const allPeople = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople(), refetchInterval: 2500 });
   const logs = useQuery({ queryKey: ["logs", id], queryFn: () => api.listLogs(id), refetchInterval: 2500 });
   const sourcePages = useQuery({ queryKey: ["sourcePages", id], queryFn: () => api.listSourcePages({ jobId: id }), refetchInterval: 5000 });
 
-  const jobContacts = useMemo(() => (allContacts.data ?? []).filter((c) => c.jobId === id), [allContacts.data, id]);
+  const [contactsFilter, setContactsFilter] = useState<string>(id);
+  useEffect(() => { setContactsFilter(id); }, [id]);
+
+  const jobContacts = useMemo(() => {
+    const list = allContacts.data ?? [];
+    if (contactsFilter === "all") return list;
+    return list.filter((c) => c.jobId === contactsFilter);
+  }, [allContacts.data, contactsFilter]);
   const jobPeople = useMemo(() => (allPeople.data ?? []).filter((p) => p.jobId === id), [allPeople.data, id]);
 
   const updateStatus = useMutation({
