@@ -77,10 +77,27 @@ async function tick(jobId: string) {
     return;
   }
 
-  // Pick a random company to "crawl"
-  const { data: companies } = await supabase.from("companies").select("id, name, domain, country, industry").limit(50);
-  if (!companies || companies.length === 0) return;
-  const target = companies[Math.floor(Math.random() * companies.length)] as any;
+  // Pick a "crawl" target — for uploaded jobs, only from the import file's matched companies
+  let target: any = null;
+  if (job.sourceType === "uploaded") {
+    const ids = await getUploadedJobCompanies(jobId);
+    if (!ids || ids.length === 0) {
+      await api.addLog(jobId, "warn", "Waiting for import matches before crawling…");
+      return;
+    }
+    const pickedId = ids[Math.floor(Math.random() * ids.length)];
+    const { data: company } = await supabase
+      .from("companies")
+      .select("id, name, domain, country, industry")
+      .eq("id", pickedId)
+      .maybeSingle();
+    if (!company) return;
+    target = company;
+  } else {
+    const { data: companies } = await supabase.from("companies").select("id, name, domain, country, industry").limit(50);
+    if (!companies || companies.length === 0) return;
+    target = companies[Math.floor(Math.random() * companies.length)];
+  }
 
   const pageType = pick(PAGE_TYPES);
   const urlPath = pageType === "homepage"
