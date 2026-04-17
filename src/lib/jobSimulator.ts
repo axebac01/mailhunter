@@ -102,17 +102,29 @@ async function tick(jobId: string) {
     }
   }
 
-  // Maybe a person (no email!)
-  if (Math.random() < 0.35 && (job.collectPersonNames || job.collectPersonRoles || job.collectDepartments)) {
+  // Maybe a person (and optionally a person-tied email)
+  if (Math.random() < 0.35 && (job.collectPersonNames || job.collectPersonRoles || job.collectDepartments || job.collectPersonEmails)) {
     const [role, dept] = pick(ROLES);
+    const fullName = pick(NAMES);
+    const teamUrl = `https://www.${target.domain}/team`;
     const { error } = await supabase.from("contact_people").insert({
       company_id: target.id, crawl_job_id: jobId,
-      full_name: job.collectPersonNames ? pick(NAMES) : "Public contact",
+      full_name: job.collectPersonNames ? fullName : "Public contact",
       role_title: job.collectPersonRoles ? role : null,
       department: job.collectDepartments ? dept : null,
-      source_url: `https://www.${target.domain}/team`,
+      source_url: teamUrl,
     });
-    if (!error) { peopleDelta++; await api.addLog(jobId, "info", `Extracted public team member metadata (no email)`); }
+    if (!error) { peopleDelta++; await api.addLog(jobId, "info", `Extracted public team member metadata`); }
+
+    if (job.collectPersonEmails) {
+      const local = fullName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z\s]/g, "").trim().split(/\s+/).join(".");
+      const value = `${local}@${target.domain}`;
+      const { error: e2 } = await supabase.from("contacts").insert({
+        company_id: target.id, crawl_job_id: jobId, contact_type: "person_email" as any,
+        value, source_url: teamUrl,
+      });
+      if (!e2) { contactsDelta++; await api.addLog(jobId, "success", `Extracted public person email ${value}`); }
+    }
   }
 
   const newProgress = Math.min(100, job.progress + 1 + Math.floor(Math.random() * 2));

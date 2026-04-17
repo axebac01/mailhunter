@@ -40,9 +40,10 @@ export function ImportStatusBadge({ status }: { status: ImportStatus }) {
 export function ContactTypeBadge({ type }: { type: ContactType }) {
   const map = {
     generic_email: { label: "Generic email", cls: "bg-primary/10 text-primary" },
+    person_email: { label: "Person email", cls: "bg-warning/10 text-warning" },
     phone: { label: "Phone", cls: "bg-info/10 text-info" },
     contact_form: { label: "Contact form", cls: "bg-accent text-accent-foreground" },
   } as const;
-  const c = map[type];
+  const c = map[type] ?? map.generic_email;
   return <span className={cn("inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium", c.cls)}>{c.label}</span>;
 }

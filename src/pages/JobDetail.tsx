@@ -98,6 +98,7 @@ export default function JobDetail() {
         <SectionCard title="Configuration">
           <ul className="space-y-1.5 text-sm">
             <li className="flex justify-between"><span className="text-muted-foreground">Generic emails</span><span>{j.collectGenericEmails ? "Yes" : "No"}</span></li>
+            <li className="flex justify-between"><span className="text-muted-foreground">Person emails</span><span>{j.collectPersonEmails ? "Yes" : "No"}</span></li>
             <li className="flex justify-between"><span className="text-muted-foreground">Phones</span><span>{j.collectPhones ? "Yes" : "No"}</span></li>
             <li className="flex justify-between"><span className="text-muted-foreground">Contact forms</span><span>{j.collectContactForms ? "Yes" : "No"}</span></li>
             <li className="flex justify-between"><span className="text-muted-foreground">Person names</span><span>{j.collectPersonNames ? "Yes" : "No"}</span></li>
