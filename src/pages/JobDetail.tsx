@@ -135,6 +135,19 @@ export default function JobDetail() {
 
         <TabsContent value="contacts">
           <SectionCard title="Contact records" noPadding>
+            <div className="flex items-center gap-3 px-5 py-3 border-b border-border">
+              <Select value={contactsFilter} onValueChange={setContactsFilter}>
+                <SelectTrigger className="w-[280px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={id}>This job</SelectItem>
+                  <SelectItem value="all">All jobs</SelectItem>
+                  {(allJobs.data ?? []).filter((x) => x.id !== id).map((x) => (
+                    <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-sm text-muted-foreground">{jobContacts.length} record{jobContacts.length === 1 ? "" : "s"}</span>
+            </div>
             {jobContacts.length === 0 ? <EmptyState description="No contacts yet for this job." /> : (
               <Table>
                 <TableHeader><TableRow><TableHead>Company</TableHead><TableHead>Type</TableHead><TableHead>Value</TableHead><TableHead>Source</TableHead><TableHead>Found</TableHead></TableRow></TableHeader>
