@@ -1,25 +1,26 @@
 
-## Make uploaded jobs crawl only their import file's companies
+## Add "Clear contacts from this job" button on Job Detail
 
-### Problem
-`jobSimulator.tick()` picks a random company from `companies` (limit 50). For jobs with `source_type = "uploaded"`, this means contacts get attached to random companies that aren't in the user's import file.
+### What
+Add a destructive action button in the Job Detail header that deletes all contacts (and people) collected for the current job, so the user can wipe the wrong data generated before the simulator fix.
 
-### Fix
-In `src/lib/jobSimulator.ts`, change the company selection inside `tick()`:
+### UI
+- New `Button` (variant `outline`, with `Trash2` icon) in the `PageHeader` actions on `src/pages/JobDetail.tsx`, placed before `ExportButton`.
+- Wrap in an `AlertDialog` (shadcn) with confirmation: "Delete all contacts and people for this job? This cannot be undone."
+- On confirm: show toast, invalidate queries.
 
-1. Read the job's `source_type`.
-2. If `source_type === "uploaded"`:
-   - Find the `imports` row where `crawl_job_id === jobId`.
-   - Load `import_rows` for that import where `matched_company_id IS NOT NULL`.
-   - Pick a random `matched_company_id`, then load that company.
-   - If no matched rows exist yet, log a warn ("Waiting for import matches…") and skip the tick.
-3. Otherwise (industry/country jobs): keep the current random-from-companies behavior.
-
-Cache the matched company id list per job in a module-level `Map` to avoid refetching `import_rows` every 1.7s; invalidate by re-reading occasionally (e.g. every 10 ticks) so newly matched rows get picked up.
+### Logic
+- Add `clearJobContacts(jobId)` to `src/lib/api.ts`:
+  - `DELETE FROM contacts WHERE crawl_job_id = jobId`
+  - `DELETE FROM contact_people WHERE crawl_job_id = jobId`
+  - `DELETE FROM source_pages WHERE crawl_job_id = jobId` (so pages tab also resets)
+  - Reset job counters: `UPDATE crawl_jobs SET contacts_found=0, people_found=0, pages_crawled=0, progress=0 WHERE id=jobId`
+- Wire as a `useMutation` in `JobDetail.tsx`; on success invalidate `["contacts"]`, `["people"]`, `["sourcePages", id]`, `["job", id]`, `["jobs"]`, `["kpis"]`.
 
 ### Files touched
-- `src/lib/jobSimulator.ts` only. No DB, schema, or UI changes.
+- `src/lib/api.ts` — add `clearJobContacts` method.
+- `src/pages/JobDetail.tsx` — add button + AlertDialog + mutation.
 
 ### Out of scope
-- Backfilling/cleaning existing wrong contacts on the current job (user can clear via Settings if desired).
-- Changing how `industry_country` jobs pick companies.
+- Bulk clearing across multiple jobs (Settings already has a global clear).
+- Clearing logs (kept for audit trail).
