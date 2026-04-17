@@ -29,7 +29,7 @@ export default function CreateJob() {
     name: "", industry: "", country: "", maxCompanies: 100,
     weekdays: ["mon","tue","wed","thu","fri"] as Weekday[],
     startTime: "09:00", endTime: "18:00",
-    collectGenericEmails: true, collectPhones: true, collectContactForms: true,
+    collectGenericEmails: true, collectPersonEmails: false, collectPhones: true, collectContactForms: true,
     collectPersonNames: true, collectPersonRoles: true, collectDepartments: false,
     deduplicate: true, notes: "",
   });
@@ -77,7 +77,7 @@ export default function CreateJob() {
     }
     if (form.maxCompanies <= 0) return "Max companies must be greater than 0.";
     if (form.endTime <= form.startTime) return "End time must be after start time.";
-    const any = form.collectGenericEmails || form.collectPhones || form.collectContactForms || form.collectPersonNames || form.collectPersonRoles || form.collectDepartments;
+    const any = form.collectGenericEmails || form.collectPersonEmails || form.collectPhones || form.collectContactForms || form.collectPersonNames || form.collectPersonRoles || form.collectDepartments;
     if (!any) return "Select at least one collection option.";
     return null;
   };
@@ -92,6 +92,7 @@ export default function CreateJob() {
         allowed_start_time: form.startTime, allowed_end_time: form.endTime,
         allowed_days: form.weekdays,
         include_generic_emails: form.collectGenericEmails,
+        include_person_emails: form.collectPersonEmails,
         include_phones: form.collectPhones,
         include_contact_forms: form.collectContactForms,
         include_contact_person_names: form.collectPersonNames,
@@ -126,6 +127,7 @@ export default function CreateJob() {
 
   const collectionOptions = [
     ["collectGenericEmails","Collect generic public emails","info@, sales@, contact@, hello@, support@, office@"],
+    ["collectPersonEmails","Collect personal public emails","Public name-based emails (e.g. firstname.lastname@company). Off by default — enable only for lawful B2B use cases."],
     ["collectPhones","Collect phone numbers","Public company phone numbers"],
     ["collectContactForms","Collect contact forms","URLs of public contact pages"],
     ["collectPersonNames","Collect contact person names","Public names only"],

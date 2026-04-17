@@ -89,7 +89,7 @@ export default function Contacts() {
             <SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All types</SelectItem>
-              {(["generic_email","phone","contact_form"] as ContactType[]).map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+              {(["generic_email","person_email","phone","contact_form"] as ContactType[]).map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={country} onValueChange={(v) => { setCountry(v); setPage(1); }}>

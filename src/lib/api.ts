@@ -28,6 +28,7 @@ export interface JobRow {
   endTime: string;
   allowedDays: Weekday[];
   collectGenericEmails: boolean;
+  collectPersonEmails: boolean;
   collectPhones: boolean;
   collectContactForms: boolean;
   collectPersonNames: boolean;
@@ -161,6 +162,7 @@ const mapJob = (r: DB["crawl_jobs"]["Row"]): JobRow => ({
   endTime: r.allowed_end_time?.slice(0, 5) ?? "18:00",
   allowedDays: r.allowed_days ?? [],
   collectGenericEmails: r.include_generic_emails,
+  collectPersonEmails: (r as any).include_person_emails ?? false,
   collectPhones: r.include_phones,
   collectContactForms: r.include_contact_forms,
   collectPersonNames: r.include_contact_person_names,
@@ -251,6 +253,7 @@ export const api = {
       allowed_end_time: orig.endTime,
       allowed_days: orig.allowedDays,
       include_generic_emails: orig.collectGenericEmails,
+      include_person_emails: orig.collectPersonEmails,
       include_phones: orig.collectPhones,
       include_contact_forms: orig.collectContactForms,
       include_contact_person_names: orig.collectPersonNames,
