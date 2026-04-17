@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { useStore } from "@/store/useStore";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api } from "@/lib/api";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { Button } from "@/components/ui/button";
@@ -11,11 +12,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 
 export default function SettingsPage() {
-  const { reseed, clearAll } = useStore();
+  const qc = useQueryClient();
+  const kpis = useQuery({ queryKey: ["kpis"], queryFn: () => api.kpis() });
   const [exportFmt, setExportFmt] = useState("csv");
   const [dedupe, setDedupe] = useState(true);
   const [autoStart, setAutoStart] = useState(false);
   const [scraperOn, setScraperOn] = useState(true);
+
+  const clear = useMutation({
+    mutationFn: () => api.clearAll(),
+    onSuccess: () => { qc.invalidateQueries(); toast.success("All data cleared"); },
+    onError: (e: any) => toast.error(e.message ?? "Failed to clear"),
+  });
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -23,14 +31,12 @@ export default function SettingsPage() {
 
       <div className="space-y-6">
         <SectionCard title="Default export settings">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div><Label>Default export format</Label><p className="text-xs text-muted-foreground">Used by quick exports across the app</p></div>
-              <Select value={exportFmt} onValueChange={setExportFmt}>
-                <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="csv">CSV</SelectItem><SelectItem value="xlsx">XLSX</SelectItem></SelectContent>
-              </Select>
-            </div>
+          <div className="flex items-center justify-between">
+            <div><Label>Default export format</Label><p className="text-xs text-muted-foreground">Used by quick exports across the app</p></div>
+            <Select value={exportFmt} onValueChange={setExportFmt}>
+              <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="csv">CSV</SelectItem><SelectItem value="xlsx">XLSX</SelectItem></SelectContent>
+            </Select>
           </div>
         </SectionCard>
 
@@ -64,30 +70,35 @@ export default function SettingsPage() {
 
         <SectionCard title="System status">
           <ul className="space-y-2 text-sm">
-            <li className="flex items-center justify-between"><span className="text-muted-foreground">Scheduler</span><span className="text-success font-medium">● Online</span></li>
+            <li className="flex items-center justify-between"><span className="text-muted-foreground">Backend</span><span className="text-success font-medium">● Connected (Lovable Cloud)</span></li>
             <li className="flex items-center justify-between"><span className="text-muted-foreground">Mock scraper</span><span className="text-success font-medium">● {scraperOn ? "Running" : "Paused"}</span></li>
-            <li className="flex items-center justify-between"><span className="text-muted-foreground">Storage</span><span className="text-success font-medium">● Healthy</span></li>
-            <li className="flex items-center justify-between"><span className="text-muted-foreground">Build</span><span className="text-muted-foreground">v0.1.0-internal</span></li>
+            <li className="flex items-center justify-between"><span className="text-muted-foreground">Total jobs</span><span>{kpis.data?.totalJobs ?? "—"}</span></li>
+            <li className="flex items-center justify-between"><span className="text-muted-foreground">Companies</span><span>{kpis.data?.companies ?? "—"}</span></li>
+            <li className="flex items-center justify-between"><span className="text-muted-foreground">Contact records</span><span>{kpis.data?.contacts ?? "—"}</span></li>
+            <li className="flex items-center justify-between"><span className="text-muted-foreground">People records</span><span>{kpis.data?.people ?? "—"}</span></li>
+            <li className="flex items-center justify-between"><span className="text-muted-foreground">Build</span><span className="text-muted-foreground">v0.2.0-internal</span></li>
           </ul>
         </SectionCard>
 
-        <SectionCard title="Demo data management" description="Reset or reseed the in-memory mock store">
+        <SectionCard title="Demo data management" description="Clear the database. Reseeding requires re-running the seed migration.">
           <div className="flex gap-3">
-            <Button variant="outline" onClick={() => { reseed(); toast.success("Demo data reseeded"); }}>Reseed demo data</Button>
             <AlertDialog>
               <AlertDialogTrigger asChild><Button variant="destructive">Clear all data</Button></AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
                   <AlertDialogTitle>Clear all data?</AlertDialogTitle>
-                  <AlertDialogDescription>This wipes all jobs, imports, contacts, people, and companies from the in-memory store. This cannot be undone.</AlertDialogDescription>
+                  <AlertDialogDescription>This wipes all jobs, imports, contacts, people, companies, and logs from the database. This cannot be undone.</AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
                   <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { clearAll(); toast.success("All data cleared"); }}>Clear all</AlertDialogAction>
+                  <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => clear.mutate()}>Clear all</AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
           </div>
+          <p className="text-xs text-muted-foreground mt-3">
+            Note: this is an internal MVP without authentication. Database access is currently open for demo purposes — tighten RLS before any external exposure.
+          </p>
         </SectionCard>
       </div>
     </div>
