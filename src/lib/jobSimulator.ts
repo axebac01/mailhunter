@@ -52,7 +52,8 @@ async function getUploadedJobCompanies(jobId: string): Promise<string[] | null> 
 
 export function startSimulator(jobId: string) {
   if (tickers.has(jobId)) return;
-  const id = window.setInterval(() => tick(jobId).catch(() => {}), 1700);
+  // Slower cadence — real Firecrawl scrapes take several seconds per company.
+  const id = window.setInterval(() => tick(jobId).catch(() => {}), 6000);
   tickers.set(jobId, id);
 }
 

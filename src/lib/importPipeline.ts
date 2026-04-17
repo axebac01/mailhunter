@@ -124,23 +124,32 @@ export async function runImport(args: {
           else { companyId = created.id; status = "matched"; matched++; }
         }
       } else {
-        // Name-only row: dedup case-insensitively, else create new company
+        // Name-only row: dedup case-insensitively, else create new company,
+        // then try to resolve a real domain via Firecrawl.
         const trimmedName = (ir.company_name ?? "").trim();
         const { data: byName } = await supabase.from("companies")
-          .select("id").ilike("name", trimmedName).limit(1).maybeSingle();
+          .select("id, domain").ilike("name", trimmedName).limit(1).maybeSingle();
         if (byName) {
           companyId = byName.id;
           status = options.ignoreDuplicates ? "duplicate" : "matched";
           if (status === "matched") matched++;
+          // If the existing company still has no domain, try resolving.
+          if (!byName.domain) await tryResolveDomain(byName.id, trimmedName, ir.country);
         } else {
           const { data: created, error } = await supabase.from("companies").insert({
             name: trimmedName,
             country: ir.country,
             industry: ir.industry,
             notes: ir.notes,
-          }).select("id").single();
+            domain_status: "unresolved",
+          } as any).select("id").single();
           if (error) { status = "failed"; failed++; }
-          else { companyId = created.id; status = "matched"; matched++; }
+          else {
+            companyId = created.id;
+            status = "matched";
+            matched++;
+            await tryResolveDomain(created.id, trimmedName, ir.country);
+          }
         }
       }
 
