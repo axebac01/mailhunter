@@ -52,7 +52,8 @@ async function getUploadedJobCompanies(jobId: string): Promise<string[] | null> 
 
 export function startSimulator(jobId: string) {
   if (tickers.has(jobId)) return;
-  const id = window.setInterval(() => tick(jobId).catch(() => {}), 1700);
+  // Slower cadence — real Firecrawl scrapes take several seconds per company.
+  const id = window.setInterval(() => tick(jobId).catch(() => {}), 6000);
   tickers.set(jobId, id);
 }
 
@@ -64,6 +65,9 @@ export function stopSimulator(jobId: string) {
 export function isSimulating(jobId: string) {
   return tickers.has(jobId);
 }
+
+// Track which companies are currently being scraped to avoid duplicate work
+const inFlight = new Map<string, Set<string>>();
 
 async function tick(jobId: string) {
   const job = await api.getJob(jobId);
@@ -77,104 +81,117 @@ async function tick(jobId: string) {
     return;
   }
 
-  // Pick a "crawl" target — for uploaded jobs, only from the import file's matched companies
-  let target: any = null;
+  // Uploaded jobs: real Firecrawl scrape per resolved company. No fakes.
   if (job.sourceType === "uploaded") {
     const ids = await getUploadedJobCompanies(jobId);
     if (!ids || ids.length === 0) {
       await api.addLog(jobId, "warn", "Waiting for import matches before crawling…");
       return;
     }
-    const pickedId = ids[Math.floor(Math.random() * ids.length)];
-    const { data: company } = await supabase
+
+    // Find next company to scrape: must have a domain and not be in-flight or already scraped this run
+    const inflightSet = inFlight.get(jobId) ?? new Set<string>();
+    inFlight.set(jobId, inflightSet);
+
+    const { data: candidates } = await supabase
       .from("companies")
-      .select("id, name, domain, country, industry")
-      .eq("id", pickedId)
-      .maybeSingle();
-    if (!company) return;
-    target = company;
-  } else {
-    const { data: companies } = await supabase.from("companies").select("id, name, domain, country, industry").limit(50);
-    if (!companies || companies.length === 0) return;
-    target = companies[Math.floor(Math.random() * companies.length)];
+      .select("id, name, domain, domain_status")
+      .in("id", ids)
+      .limit(200);
+    const list = candidates ?? [];
+    const next = list.find((c: any) =>
+      c.domain && c.domain.length > 0 && !inflightSet.has(c.id)
+    );
+
+    if (!next) {
+      // Nothing scrapeable remains — log unresolved count then complete
+      const unresolved = list.filter((c: any) => !c.domain).length;
+      if (unresolved > 0) {
+        await api.addLog(jobId, "warn", `${unresolved} companies have no resolved domain — skipping.`);
+      }
+      await api.addLog(jobId, "info", "All resolvable companies have been processed.");
+      await api.updateJobStatus(jobId, "completed");
+      stopSimulator(jobId);
+      return;
+    }
+
+    inflightSet.add(next.id);
+    await api.addLog(jobId, "info", `Scraping ${next.name} (${next.domain})…`);
+
+    try {
+      const { error } = await supabase.functions.invoke("scrape-emails", {
+        body: {
+          companyId: next.id,
+          domain: next.domain,
+          jobId,
+          options: {
+            genericEmails: job.collectGenericEmails,
+            personEmails: job.collectPersonEmails,
+            phones: job.collectPhones,
+            contactForms: job.collectContactForms,
+          },
+        },
+      });
+      if (error) {
+        await api.addLog(jobId, "error", `Scrape failed for ${next.domain}: ${error.message}`);
+      }
+    } catch (e: any) {
+      await api.addLog(jobId, "error", `Scrape threw for ${next.domain}: ${e?.message ?? e}`);
+    }
+
+    // Refresh counts from DB (scrape function inserted contacts directly)
+    const [{ count: contactsCount }, { count: peopleCount }, { count: pagesCount }] = await Promise.all([
+      supabase.from("contacts").select("id", { count: "exact", head: true }).eq("crawl_job_id", jobId),
+      supabase.from("contact_people").select("id", { count: "exact", head: true }).eq("crawl_job_id", jobId),
+      supabase.from("source_pages").select("id", { count: "exact", head: true }).eq("crawl_job_id", jobId),
+    ]);
+    const totalCompanies = list.filter((c: any) => c.domain).length;
+    const scraped = inflightSet.size;
+    const newProgress = Math.min(100, Math.round((scraped / Math.max(1, totalCompanies)) * 100));
+    await api.patchJob(jobId, {
+      progress: newProgress,
+      companies_found: scraped,
+      contacts_found: contactsCount ?? 0,
+      people_found: peopleCount ?? 0,
+      pages_crawled: pagesCount ?? 0,
+    });
+    return;
   }
 
+  // industry_country jobs: keep the lightweight demo simulator (clearly synthetic).
+  const { data: companies } = await supabase
+    .from("companies")
+    .select("id, name, domain, country, industry")
+    .not("domain", "is", null)
+    .limit(50);
+  if (!companies || companies.length === 0) {
+    await api.addLog(jobId, "warn", "No companies with resolved domains available.");
+    return;
+  }
+  const target: any = companies[Math.floor(Math.random() * companies.length)];
+  if (!target.domain) return; // hard guard against null
+
   const pageType = pick(PAGE_TYPES);
-  const urlPath = pageType === "homepage"
-    ? ""
-    : pageType === "contact"
-      ? pick(CONTACT_PAGE_PATHS)
-      : pageType;
+  const urlPath = pageType === "homepage" ? "" : pageType === "contact" ? pick(CONTACT_PAGE_PATHS) : pageType;
   const url = `https://www.${target.domain}/${urlPath}`;
   const logPath = pageType === "homepage" ? "homepage" : `/${urlPath}`;
 
-  // Always: log + source_page
   await Promise.all([
-    api.addLog(jobId, "info", `Crawled ${logPath} page on ${target.domain}`),
+    api.addLog(jobId, "info", `[demo] Crawled ${logPath} on ${target.domain}`),
     supabase.from("source_pages").insert({
       company_id: target.id, crawl_job_id: jobId, url, page_type: pageType, status_code: 200,
-      extracted_summary: `Public ${pageType} page; extracted allowed contact data.`,
+      extracted_summary: `Demo crawl of public ${pageType} page.`,
     }),
   ]);
 
   let contactsDelta = 0;
-  let peopleDelta = 0;
-
-  // Maybe a contact
-  if (Math.random() < 0.7) {
-    const r = Math.random();
-    if (r < 0.6 && job.collectGenericEmails) {
-      const value = `${pick(PREFIXES)}@${target.domain}`;
-      if (!isPersonalEmail(value)) {
-        const { error } = await supabase.from("contacts").insert({
-          company_id: target.id, crawl_job_id: jobId, contact_type: "generic_email",
-          value, source_url: url,
-        });
-        if (!error) {
-          contactsDelta++;
-          await api.addLog(jobId, "success", `Extracted generic email ${value}`);
-        }
-      } else {
-        await api.addLog(jobId, "warn", `Discarded person-tied email candidate on ${target.domain}`);
-      }
-    } else if (r < 0.85 && job.collectPhones) {
+  if (Math.random() < 0.5 && job.collectGenericEmails) {
+    const value = `${pick(PREFIXES)}@${target.domain}`;
+    if (!isPersonalEmail(value)) {
       const { error } = await supabase.from("contacts").insert({
-        company_id: target.id, crawl_job_id: jobId, contact_type: "phone",
-        value: pick(PHONE_POOL), source_url: url,
+        company_id: target.id, crawl_job_id: jobId, contact_type: "generic_email", value, source_url: url,
       });
-      if (!error) { contactsDelta++; await api.addLog(jobId, "success", `Extracted public phone number`); }
-    } else if (job.collectContactForms) {
-      const formUrl = `https://www.${target.domain}/${pick(CONTACT_PATHS)}`;
-      const { error } = await supabase.from("contacts").insert({
-        company_id: target.id, crawl_job_id: jobId, contact_type: "contact_form",
-        value: formUrl, source_url: url,
-      });
-      if (!error) { contactsDelta++; await api.addLog(jobId, "success", `Found public contact form URL`); }
-    }
-  }
-
-  // Maybe a person (and optionally a person-tied email)
-  if (Math.random() < 0.35 && (job.collectPersonNames || job.collectPersonRoles || job.collectDepartments || job.collectPersonEmails)) {
-    const [role, dept] = pick(ROLES);
-    const fullName = pick(NAMES);
-    const teamUrl = `https://www.${target.domain}/team`;
-    const { error } = await supabase.from("contact_people").insert({
-      company_id: target.id, crawl_job_id: jobId,
-      full_name: job.collectPersonNames ? fullName : "Public contact",
-      role_title: job.collectPersonRoles ? role : null,
-      department: job.collectDepartments ? dept : null,
-      source_url: teamUrl,
-    });
-    if (!error) { peopleDelta++; await api.addLog(jobId, "info", `Extracted public team member metadata`); }
-
-    if (job.collectPersonEmails) {
-      const local = fullName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z\s]/g, "").trim().split(/\s+/).join(".");
-      const value = `${local}@${target.domain}`;
-      const { error: e2 } = await supabase.from("contacts").insert({
-        company_id: target.id, crawl_job_id: jobId, contact_type: "person_email" as any,
-        value, source_url: teamUrl,
-      });
-      if (!e2) { contactsDelta++; await api.addLog(jobId, "success", `Extracted public person email ${value}`); }
+      if (!error) { contactsDelta++; await api.addLog(jobId, "success", `[demo] Extracted ${value}`); }
     }
   }
 
@@ -183,7 +200,6 @@ async function tick(jobId: string) {
     progress: newProgress,
     companies_found: job.companiesFound + (Math.random() < 0.4 ? 1 : 0),
     contacts_found: job.contactsFound + contactsDelta,
-    people_found: job.peopleFound + peopleDelta,
     pages_crawled: job.pagesCrawled + 1,
   });
 }

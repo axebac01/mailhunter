@@ -31,6 +31,28 @@ export default function JobDetail() {
   const allPeople = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople(), refetchInterval: 2500 });
   const logs = useQuery({ queryKey: ["logs", id], queryFn: () => api.listLogs(id), refetchInterval: 2500 });
   const sourcePages = useQuery({ queryKey: ["sourcePages", id], queryFn: () => api.listSourcePages({ jobId: id }), refetchInterval: 5000 });
+  const domainStats = useQuery({
+    queryKey: ["domainStats", id],
+    queryFn: async () => {
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data: imports } = await supabase.from("imports").select("id").eq("crawl_job_id", id);
+      const importIds = (imports ?? []).map((i: any) => i.id);
+      if (importIds.length === 0) return null;
+      const { data: rows } = await supabase.from("import_rows").select("matched_company_id").in("import_id", importIds).not("matched_company_id", "is", null);
+      const companyIds = Array.from(new Set((rows ?? []).map((r: any) => r.matched_company_id).filter(Boolean)));
+      if (companyIds.length === 0) return { total: 0, resolved: 0, unresolved: 0, failed: 0 };
+      const { data: companies } = await supabase.from("companies").select("id, domain, domain_status").in("id", companyIds);
+      const list = (companies ?? []) as any[];
+      return {
+        total: list.length,
+        resolved: list.filter((c) => c.domain).length,
+        unresolved: list.filter((c) => !c.domain && (c.domain_status === "unresolved" || !c.domain_status)).length,
+        failed: list.filter((c) => !c.domain && c.domain_status === "failed").length,
+      };
+    },
+    refetchInterval: 5000,
+    enabled: !!id,
+  });
 
   const [contactsFilter, setContactsFilter] = useState<string>(id);
   useEffect(() => { setContactsFilter(id); }, [id]);
@@ -160,6 +182,19 @@ export default function JobDetail() {
         <KpiCard label="People" value={fmtNum(j.peopleFound)} icon={<Users className="h-4 w-4" />} />
         <KpiCard label="Pages crawled" value={fmtNum(j.pagesCrawled)} icon={<Globe className="h-4 w-4" />} />
       </div>
+
+      {j.sourceType === "uploaded" && domainStats.data && (
+        <div className="mb-6 rounded-md border border-border bg-card px-4 py-3 text-sm flex flex-wrap items-center gap-x-6 gap-y-1">
+          <span className="font-medium">Domain resolution</span>
+          <span className="text-muted-foreground">{domainStats.data.total} companies</span>
+          <span className="text-success">✓ {domainStats.data.resolved} resolved</span>
+          <span className="text-warning">… {domainStats.data.unresolved} pending</span>
+          <span className="text-destructive">✗ {domainStats.data.failed} no domain found</span>
+          {domainStats.data.failed > 0 && (
+            <span className="text-xs text-muted-foreground ml-auto">Companies without a real domain are skipped — no fake emails are generated.</span>
+          )}
+        </div>
+      )}
 
       <Tabs defaultValue="contacts">
         <TabsList>
