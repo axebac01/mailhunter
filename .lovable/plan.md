@@ -1,50 +1,59 @@
 
-## Goal: Real domains → real emails (no more `sales@null`)
 
-### Root cause
-Import files only contain company names. `companies.domain` stays `null`. The simulator then builds emails as `${prefix}@${company.domain}` → literally `sales@null`. There is no domain-resolution step and no real scraping — everything is fabricated client-side.
+## Improvements to the domain → email pipeline
 
-### Plan: 3-stage pipeline
+The current pipeline works but has several real weaknesses I'd recommend tightening. Grouped by impact.
 
-**Stage 1 — Domain resolver (Name → Domain)**
-New edge function `resolve-domain`:
-- Input: `{ companyName, country? }`
-- Uses Firecrawl Search (`site:` + name + country) and/or a Google-style search to find the company's official site
-- Picks the top result whose hostname looks like the company (heuristic: name tokens appear in domain, not a directory like linkedin/wikipedia/facebook)
-- Returns `{ domain, website, confidence: 'high' | 'low' | 'none', evidenceUrl }`
-- Requires **Firecrawl** connector (we'll prompt to connect it)
+### High impact
 
-Run it during import for rows without a website, OR as a "Resolve domains" action on the job before crawling. Update `companies.domain`/`website`. If `confidence === 'none'`, leave domain `null` and mark the company as `unresolved`.
+1. **Resolve domains in parallel during import** — today `runImport` awaits `tryResolveDomain` for every name-only row sequentially. A 200-row file = 200 sequential Firecrawl Search calls (~5–10 minutes). Switch to a small concurrency pool (e.g. 5 in flight) per import.
 
-**Stage 2 — Make the simulator honest (no fakes)**
-In `src/lib/jobSimulator.ts`:
-- Skip any company where `domain` is null/empty — log `warn`: "Skipped {name}: no domain resolved"
-- Remove all fabricated `${prefix}@${domain}` and `firstname.lastname@domain` generation paths
-- Stage 2 jobs become real-scrape only (see Stage 3); keep simulator only for `industry_country` demo jobs and clearly label any synthetic data
+2. **Move domain resolution server-side in batches** — a new `resolve-domains-batch` edge function that takes `{ companyIds: [] }` and resolves them with proper concurrency, retries, and a single auth context. The browser tab can be closed without halting work.
 
-**Stage 3 — Real email scraper (Domain → Emails)**
-New edge function `scrape-emails`:
-- Input: `{ companyId, domain, jobId, options: { genericEmails, personEmails, phones, contactForms } }`
-- Uses Firecrawl: `map(domain)` to find pages, then `scrape` on `/contact`, `/about`, `/team`, `/impressum`, homepage
-- Extracts with regex: `email` (`/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi`), phone (E.164-ish), `mailto:` links, contact form URLs
-- Filters: only keep emails whose host matches the company domain (or a known parent), drop obvious junk (`example.com`, `sentry.io`, `wixpress`)
-- Inserts real rows into `contacts` / `contact_people` with the real `source_url`
-- If nothing found for a company → insert one row of type `not_found` (new contact_type) OR simply don't insert and record a `crawl_log` "No public emails found for {domain}"
+3. **Scrape one company at a time → too slow for big jobs.** `jobSimulator.tick()` runs every 6s and scrapes one company per tick. For 100 companies that's 10 minutes of wall time on a tab that has to stay open. Replace with a `scrape-emails-batch` edge function invoked once when the job starts; it loops through resolved companies with concurrency 3–5 and updates job counters itself. The simulator becomes just a polling/refresh loop.
 
-The Job Detail page already shows contacts per job, so "Not Found" can simply be the absence of rows + a status badge on the company.
+4. **Better domain confidence scoring** — current heuristic in `resolve-domain` just counts token matches. Improvements:
+   - Verify the candidate by fetching its homepage and checking that the company name actually appears in `<title>` / og tags.
+   - Penalize when the TLD doesn't match the country (e.g. Swedish company → prefer `.se`).
+   - Reject when the only match is in a path/subdomain of a generic host.
 
-### What I'll need from you
-- Approve connecting the **Firecrawl** connector (required for both search + scrape). I'll prompt for the connection when implementing.
+### Medium impact
+
+5. **Add a "Resolve domains" button on Job Detail** — manually trigger re-resolution for `unresolved`/`failed` companies in the linked imports without re-importing.
+
+6. **Persist `not_found` as a contact row** (or a dedicated `company_status`) so the UI shows "No public emails found" per company instead of just "0 contacts". Currently this only goes to the log.
+
+7. **Smarter contact-page discovery** — `firecrawlMap` returns up to 50 links and we keep at most 6 matched + homepage. Add `/imprint`, `/legal`, `/press`, `/karriere`, `/jobs`, `/staff`, `/leadership`. For German/Nordic sites the impressum is usually the gold mine.
+
+8. **Decode obfuscated emails** — many sites write `info [at] example [dot] com` or hex-encoded mailto. Add a normalization pass before the regex.
+
+9. **Cache Firecrawl results** — store `last_scraped_at` on `companies` and skip re-scraping within e.g. 7 days unless the user clicks "Re-scrape".
+
+### Low impact / polish
+
+10. **Phone normalization** — current regex returns raw strings like `+46 8 506 100 00`; normalize to E.164 and dedupe.
+11. **Replace the `tab-must-stay-open` simulator** for uploaded jobs with realtime subscriptions on `crawl_jobs` so the UI just reflects server progress.
+12. **Surface Firecrawl errors clearly** — 402 (insufficient credits) should show a banner with the top-up CTA, not silently log "Scrape failed".
+
+### Recommended scope for this round
+
+The biggest user-visible wins are **#1, #2, #3, #5**. Suggested deliverables:
+
+- New edge function `resolve-domains-batch` (concurrency 5, retries 1).
+- New edge function `scrape-emails-batch` (concurrency 3, updates `crawl_jobs` counters directly).
+- `JobDetail.tsx`: "Resolve domains" button + change Start to invoke `scrape-emails-batch` instead of the per-tick simulator path.
+- `jobSimulator.ts`: for `uploaded` jobs, stop driving scrapes from the client — just refresh queries while the server batch runs.
+- Keep `resolve-domain` and `scrape-emails` (single-company) as building blocks used by both batch functions and ad-hoc retries.
 
 ### Files touched
-- `supabase/functions/resolve-domain/index.ts` (new)
-- `supabase/functions/scrape-emails/index.ts` (new)
-- `src/lib/importPipeline.ts` — call `resolve-domain` for rows without website
-- `src/lib/jobSimulator.ts` — stop fabricating emails; for uploaded jobs, invoke `scrape-emails` per resolved company instead of synthesizing
-- `src/pages/JobDetail.tsx` — small status indicator showing "X companies unresolved / Y scraped / Z not found"
-- Migration: add `contact_type = 'not_found'` (optional) and a `companies.domain_status` column (`unresolved | resolved | failed`) so the UI can show "Not Found" clearly
+- `supabase/functions/resolve-domains-batch/index.ts` (new)
+- `supabase/functions/scrape-emails-batch/index.ts` (new)
+- `supabase/functions/resolve-domain/index.ts` (improve scoring + homepage verification)
+- `src/lib/jobSimulator.ts` (uploaded jobs → poll-only)
+- `src/lib/importPipeline.ts` (skip per-row resolve; enqueue a batch resolve at the end)
+- `src/pages/JobDetail.tsx` (Resolve domains button, hook Start to batch scrape)
 
 ### Out of scope
-- Paid email-finder APIs (Hunter, Apollo) — Firecrawl-only for now
-- Email verification (SMTP/MX checks)
-- Backfilling old fake `@null` rows — use the existing "Clear contacts" button
+- Paid email finders (Hunter/Apollo), MX verification, obfuscation decoding (deferred to round 2).
+- Backfilling old fake `@null` rows (use existing Clear contacts).
+
