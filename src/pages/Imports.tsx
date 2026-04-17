@@ -75,19 +75,6 @@ export default function Imports() {
     mutationFn: (id: string) => api.deleteImport(id),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["imports"] }); qc.invalidateQueries({ queryKey: ["kpis"] }); toast.success("Import deleted"); },
   });
-
-  const exportDetail = async (_s: any, format: "csv"|"xlsx") => {
-    if (!detailRows.data) return;
-    const rows = detailRows.data.map((r) => ({
-      company_name: r.companyName, country: r.country ?? "", website: r.website ?? "",
-      industry: r.industry ?? "", notes: r.notes ?? "", status: r.status,
-      matched_domain: r.matchedDomain ?? "", error: r.errorMessage ?? "",
-    }));
-    const name = await exportImportResults(rows, format);
-    qc.invalidateQueries({ queryKey: ["kpis"] });
-    toast.success(`Exported ${name}`);
-  };
-
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
