@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe } from "lucide-react";
@@ -24,12 +25,20 @@ export default function JobDetail() {
   const qc = useQueryClient();
 
   const job = useQuery({ queryKey: ["job", id], queryFn: () => api.getJob(id), refetchInterval: 2500 });
+  const allJobs = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
   const allContacts = useQuery({ queryKey: ["contacts"], queryFn: () => api.listContacts(), refetchInterval: 2500 });
   const allPeople = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople(), refetchInterval: 2500 });
   const logs = useQuery({ queryKey: ["logs", id], queryFn: () => api.listLogs(id), refetchInterval: 2500 });
   const sourcePages = useQuery({ queryKey: ["sourcePages", id], queryFn: () => api.listSourcePages({ jobId: id }), refetchInterval: 5000 });
 
-  const jobContacts = useMemo(() => (allContacts.data ?? []).filter((c) => c.jobId === id), [allContacts.data, id]);
+  const [contactsFilter, setContactsFilter] = useState<string>(id);
+  useEffect(() => { setContactsFilter(id); }, [id]);
+
+  const jobContacts = useMemo(() => {
+    const list = allContacts.data ?? [];
+    if (contactsFilter === "all") return list;
+    return list.filter((c) => c.jobId === contactsFilter);
+  }, [allContacts.data, contactsFilter]);
   const jobPeople = useMemo(() => (allPeople.data ?? []).filter((p) => p.jobId === id), [allPeople.data, id]);
 
   const updateStatus = useMutation({
@@ -126,6 +135,19 @@ export default function JobDetail() {
 
         <TabsContent value="contacts">
           <SectionCard title="Contact records" noPadding>
+            <div className="flex items-center gap-3 px-5 py-3 border-b border-border">
+              <Select value={contactsFilter} onValueChange={setContactsFilter}>
+                <SelectTrigger className="w-[280px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={id}>This job</SelectItem>
+                  <SelectItem value="all">All jobs</SelectItem>
+                  {(allJobs.data ?? []).filter((x) => x.id !== id).map((x) => (
+                    <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-sm text-muted-foreground">{jobContacts.length} record{jobContacts.length === 1 ? "" : "s"}</span>
+            </div>
             {jobContacts.length === 0 ? <EmptyState description="No contacts yet for this job." /> : (
               <Table>
                 <TableHeader><TableRow><TableHead>Company</TableHead><TableHead>Type</TableHead><TableHead>Value</TableHead><TableHead>Source</TableHead><TableHead>Found</TableHead></TableRow></TableHeader>
