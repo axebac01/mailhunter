@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import type { ImportStatus, JobStatus } from "@/types";
+import type { ContactType, ImportStatus, JobStatus } from "@/lib/api";
 
 const jobMap: Record<JobStatus, { label: string; cls: string; dot?: boolean }> = {
   draft: { label: "Draft", cls: "bg-muted text-muted-foreground" },
@@ -18,13 +18,15 @@ const importMap: Record<ImportStatus, { label: string; cls: string }> = {
   not_found: { label: "Not found", cls: "bg-warning/10 text-warning" },
   duplicate: { label: "Duplicate", cls: "bg-accent text-accent-foreground" },
   failed: { label: "Failed", cls: "bg-destructive/10 text-destructive" },
+  processing: { label: "Processing", cls: "bg-primary/10 text-primary" },
+  completed: { label: "Completed", cls: "bg-success/10 text-success" },
 };
 
 export function JobStatusBadge({ status }: { status: JobStatus }) {
   const c = jobMap[status];
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium", c.cls)}>
-      {c.dot && <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse-soft" />}
+      {c.dot && <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />}
       {c.label}
     </span>
   );
@@ -35,7 +37,7 @@ export function ImportStatusBadge({ status }: { status: ImportStatus }) {
   return <span className={cn("inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium", c.cls)}>{c.label}</span>;
 }
 
-export function ContactTypeBadge({ type }: { type: "generic_email" | "phone" | "contact_form" }) {
+export function ContactTypeBadge({ type }: { type: ContactType }) {
   const map = {
     generic_email: { label: "Generic email", cls: "bg-primary/10 text-primary" },
     phone: { label: "Phone", cls: "bg-info/10 text-info" },
