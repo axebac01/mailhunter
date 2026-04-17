@@ -18,6 +18,7 @@ export default function SettingsPage() {
   const [dedupe, setDedupe] = useState(true);
   const [autoStart, setAutoStart] = useState(false);
   const [scraperOn, setScraperOn] = useState(true);
+  const [personEmails, setPersonEmails] = useState(false);
 
   const clear = useMutation({
     mutationFn: () => api.clearAll(),
@@ -58,6 +59,16 @@ export default function SettingsPage() {
           <div className="flex items-center justify-between">
             <div><Label>Auto-start jobs after import</Label><p className="text-xs text-muted-foreground">Begin processing as soon as upload completes</p></div>
             <Switch checked={autoStart} onCheckedChange={setAutoStart} />
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Personal emails" description="Default for the 'Collect personal public emails' toggle on new jobs.">
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>Collect personal public emails by default</Label>
+              <p className="text-xs text-muted-foreground">Public name-based emails (e.g. firstname.lastname@company). Off by default — enable only for lawful B2B use cases.</p>
+            </div>
+            <Switch checked={personEmails} onCheckedChange={setPersonEmails} />
           </div>
         </SectionCard>
 
