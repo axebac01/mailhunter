@@ -17,6 +17,8 @@ const ROLES: Array<[string, string]> = [
   ["VP of Sales","Sales"],["Customer Success Lead","Support"],["Plant Manager","Operations"],
 ];
 const PAGE_TYPES = ["homepage","contact","about","team","people"] as const;
+const CONTACT_PATHS = ["contact", "contacts", "contact-us"] as const;
+const CONTACT_PAGE_PATHS = ["contact", "contacts"] as const;
 
 const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
@@ -55,11 +57,17 @@ async function tick(jobId: string) {
   const target = companies[Math.floor(Math.random() * companies.length)] as any;
 
   const pageType = pick(PAGE_TYPES);
-  const url = `https://www.${target.domain}/${pageType === "homepage" ? "" : pageType}`;
+  const urlPath = pageType === "homepage"
+    ? ""
+    : pageType === "contact"
+      ? pick(CONTACT_PAGE_PATHS)
+      : pageType;
+  const url = `https://www.${target.domain}/${urlPath}`;
+  const logPath = pageType === "homepage" ? "homepage" : `/${urlPath}`;
 
   // Always: log + source_page
   await Promise.all([
-    api.addLog(jobId, "info", `Crawled ${pageType} page on ${target.domain}`),
+    api.addLog(jobId, "info", `Crawled ${logPath} page on ${target.domain}`),
     supabase.from("source_pages").insert({
       company_id: target.id, crawl_job_id: jobId, url, page_type: pageType, status_code: 200,
       extracted_summary: `Public ${pageType} page; extracted allowed contact data.`,
@@ -93,7 +101,7 @@ async function tick(jobId: string) {
       });
       if (!error) { contactsDelta++; await api.addLog(jobId, "success", `Extracted public phone number`); }
     } else if (job.collectContactForms) {
-      const formUrl = `https://www.${target.domain}/contact-us`;
+      const formUrl = `https://www.${target.domain}/${pick(CONTACT_PATHS)}`;
       const { error } = await supabase.from("contacts").insert({
         company_id: target.id, crawl_job_id: jobId, contact_type: "contact_form",
         value: formUrl, source_url: url,
