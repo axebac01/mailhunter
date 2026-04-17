@@ -11,6 +11,7 @@ import Jobs from "./pages/Jobs";
 import JobDetail from "./pages/JobDetail";
 import CreateJob from "./pages/CreateJob";
 import Imports from "./pages/Imports";
+import ImportDetail from "./pages/ImportDetail";
 import Contacts from "./pages/Contacts";
 import People from "./pages/People";
 import Companies from "./pages/Companies";
@@ -41,6 +42,7 @@ const App = () => (
             <Route path="/jobs/new" element={<CreateJob />} />
             <Route path="/jobs/:id" element={<JobDetail />} />
             <Route path="/imports" element={<Imports />} />
+            <Route path="/imports/:id" element={<ImportDetail />} />
             <Route path="/contacts" element={<Contacts />} />
             <Route path="/people" element={<People />} />
             <Route path="/companies" element={<Companies />} />

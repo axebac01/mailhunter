@@ -1,16 +1,14 @@
 import { useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Upload, FileText, X, CheckCircle2, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { autoMap, parseFile, runImport, type Mapping, type ParsedFile } from "@/lib/importPipeline";
-import { exportImportResults } from "@/lib/exporters";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ImportStatusBadge } from "@/components/app/StatusBadge";
-import { ExportButton } from "@/components/app/ExportButton";
-import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -22,6 +20,7 @@ import { cn } from "@/lib/utils";
 const TARGET_FIELDS = ["company_name","country","website","industry","notes"] as const;
 
 export default function Imports() {
+  const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
   const { data: imports = [] } = useQuery({ queryKey: ["imports"], queryFn: () => api.listImports(), refetchInterval: 3000 });
@@ -33,13 +32,6 @@ export default function Imports() {
   const [mapping, setMapping] = useState<Mapping>({});
   const [opts, setOpts] = useState({ ignoreDuplicates: true, overwriteEmpty: false, autoStart: false, attachJob: "none" });
   const [progress, setProgress] = useState<{ p: number; t: number } | null>(null);
-
-  const [detailId, setDetailId] = useState<string | null>(null);
-  const detailRows = useQuery({
-    queryKey: ["importRows", detailId],
-    queryFn: () => api.listImportRows(detailId!),
-    enabled: !!detailId,
-  });
 
   const handleFile = async (f: File) => {
     setFile(f);
@@ -83,19 +75,6 @@ export default function Imports() {
     mutationFn: (id: string) => api.deleteImport(id),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["imports"] }); qc.invalidateQueries({ queryKey: ["kpis"] }); toast.success("Import deleted"); },
   });
-
-  const exportDetail = async (_s: any, format: "csv"|"xlsx") => {
-    if (!detailRows.data) return;
-    const rows = detailRows.data.map((r) => ({
-      company_name: r.companyName, country: r.country ?? "", website: r.website ?? "",
-      industry: r.industry ?? "", notes: r.notes ?? "", status: r.status,
-      matched_domain: r.matchedDomain ?? "", error: r.errorMessage ?? "",
-    }));
-    const name = await exportImportResults(rows, format);
-    qc.invalidateQueries({ queryKey: ["kpis"] });
-    toast.success(`Exported ${name}`);
-  };
-
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
@@ -222,7 +201,7 @@ export default function Imports() {
             </TableHeader>
             <TableBody>
               {imports.map((i) => (
-                <TableRow key={i.id} className="cursor-pointer" onClick={() => setDetailId(i.id)}>
+                <TableRow key={i.id} className="cursor-pointer" onClick={() => navigate(`/imports/${i.id}`)}>
                   <TableCell className="font-medium">{i.fileName}</TableCell>
                   <TableCell className="text-muted-foreground text-sm">{fmtRelative(i.createdAt)}</TableCell>
                   <TableCell><ImportStatusBadge status={i.status} /></TableCell>
@@ -242,43 +221,6 @@ export default function Imports() {
         )}
       </SectionCard>
 
-      {/* Inline import detail */}
-      {detailId && (
-        <Card className="mt-6 p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold">Import details</h3>
-            <div className="flex gap-2">
-              <ExportButton onExport={exportDetail} disableSelected />
-              <Button variant="ghost" size="sm" onClick={() => setDetailId(null)}>Close</Button>
-            </div>
-          </div>
-          {detailRows.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : (
-            <div className="overflow-auto max-h-[500px]">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Company</TableHead><TableHead>Website</TableHead>
-                    <TableHead>Country</TableHead><TableHead>Industry</TableHead>
-                    <TableHead>Status</TableHead><TableHead>Error</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(detailRows.data ?? []).map((r) => (
-                    <TableRow key={r.id}>
-                      <TableCell className="font-medium">{r.companyName}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground truncate max-w-[200px]">{r.website ?? "—"}</TableCell>
-                      <TableCell className="text-sm">{r.country ?? "—"}</TableCell>
-                      <TableCell className="text-sm">{r.industry ?? "—"}</TableCell>
-                      <TableCell><ImportStatusBadge status={r.status} /></TableCell>
-                      <TableCell className="text-xs text-destructive">{r.errorMessage ?? ""}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </Card>
-      )}
     </div>
   );
 }
