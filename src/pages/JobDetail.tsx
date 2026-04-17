@@ -92,6 +92,25 @@ export default function JobDetail() {
     onError: (e: any) => toast.error(e?.message ?? "Failed to clear"),
   });
 
+  const resolveDomains = useMutation({
+    mutationFn: async () => {
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data, error } = await supabase.functions.invoke("resolve-domains-batch", { body: { jobId: id } });
+      if (error) throw error;
+      return data as { resolved: number; failed: number; total: number; paymentRequired?: boolean };
+    },
+    onSuccess: (r) => {
+      if (r?.paymentRequired) {
+        toast.error("Firecrawl: insufficient credits. Top up to continue.");
+      } else {
+        toast.success(`Domain resolution: ${r?.resolved ?? 0} resolved, ${r?.failed ?? 0} failed (of ${r?.total ?? 0}).`);
+      }
+      qc.invalidateQueries({ queryKey: ["domainStats", id] });
+      qc.invalidateQueries({ queryKey: ["companies"] });
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Resolve domains failed"),
+  });
+
   useEffect(() => () => {/* keep simulator running across navigations */}, []);
 
   if (job.isLoading) return <div className="p-6">Loading…</div>;
