@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 const TARGET_FIELDS = ["company_name","country","website","industry","notes"] as const;
 
 export default function Imports() {
+  const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
   const { data: imports = [] } = useQuery({ queryKey: ["imports"], queryFn: () => api.listImports(), refetchInterval: 3000 });
