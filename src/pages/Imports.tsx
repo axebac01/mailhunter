@@ -201,7 +201,7 @@ export default function Imports() {
             </TableHeader>
             <TableBody>
               {imports.map((i) => (
-                <TableRow key={i.id} className="cursor-pointer" onClick={() => setDetailId(i.id)}>
+                <TableRow key={i.id} className="cursor-pointer" onClick={() => navigate(`/imports/${i.id}`)}>
                   <TableCell className="font-medium">{i.fileName}</TableCell>
                   <TableCell className="text-muted-foreground text-sm">{fmtRelative(i.createdAt)}</TableCell>
                   <TableCell><ImportStatusBadge status={i.status} /></TableCell>
