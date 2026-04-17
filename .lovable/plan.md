@@ -1,21 +1,25 @@
 
-## Scope the Job Detail "Contact records" list to the current job, with a job picker
+## Make uploaded jobs crawl only their import file's companies
 
-### What changes
-On `/jobs/:id` (file: `src/pages/JobDetail.tsx`), the **Contact records** section currently appears to show contacts in a way the user finds too broad. I'll:
+### Problem
+`jobSimulator.tick()` picks a random company from `companies` (limit 50). For jobs with `source_type = "uploaded"`, this means contacts get attached to random companies that aren't in the user's import file.
 
-1. **Default the list to only the current job's contacts** (filter by `crawl_job_id === jobId`).
-2. **Add a dropdown above the list** with options:
-   - "This job" (default, selected)
-   - "All jobs"
-   - One entry per other existing job (so the user can switch context without leaving the page)
-3. When "All jobs" or another job is picked, the list updates accordingly. The section header stays "Contact records"; a small muted label next to the dropdown shows the row count.
+### Fix
+In `src/lib/jobSimulator.ts`, change the company selection inside `tick()`:
+
+1. Read the job's `source_type`.
+2. If `source_type === "uploaded"`:
+   - Find the `imports` row where `crawl_job_id === jobId`.
+   - Load `import_rows` for that import where `matched_company_id IS NOT NULL`.
+   - Pick a random `matched_company_id`, then load that company.
+   - If no matched rows exist yet, log a warn ("Waiting for import matches…") and skip the tick.
+3. Otherwise (industry/country jobs): keep the current random-from-companies behavior.
+
+Cache the matched company id list per job in a module-level `Map` to avoid refetching `import_rows` every 1.7s; invalidate by re-reading occasionally (e.g. every 10 ticks) so newly matched rows get picked up.
 
 ### Files touched
-- `src/pages/JobDetail.tsx` — add `useState` for selected job filter (init to current `jobId`), fetch jobs list via existing `api.listJobs()` query, filter the contacts array before rendering, render a `Select` (shadcn) above the contacts table.
-
-No DB, API, or schema changes. No impact on the global `/contacts` page.
+- `src/lib/jobSimulator.ts` only. No DB, schema, or UI changes.
 
 ### Out of scope
-- Persisting the dropdown choice across navigations.
-- Adding the same picker to Imports/Companies pages.
+- Backfilling/cleaning existing wrong contacts on the current job (user can clear via Settings if desired).
+- Changing how `industry_country` jobs pick companies.
