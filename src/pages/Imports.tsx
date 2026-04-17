@@ -221,43 +221,6 @@ export default function Imports() {
         )}
       </SectionCard>
 
-      {/* Inline import detail */}
-      {detailId && (
-        <Card className="mt-6 p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold">Import details</h3>
-            <div className="flex gap-2">
-              <ExportButton onExport={exportDetail} disableSelected />
-              <Button variant="ghost" size="sm" onClick={() => setDetailId(null)}>Close</Button>
-            </div>
-          </div>
-          {detailRows.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : (
-            <div className="overflow-auto max-h-[500px]">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Company</TableHead><TableHead>Website</TableHead>
-                    <TableHead>Country</TableHead><TableHead>Industry</TableHead>
-                    <TableHead>Status</TableHead><TableHead>Error</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(detailRows.data ?? []).map((r) => (
-                    <TableRow key={r.id}>
-                      <TableCell className="font-medium">{r.companyName}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground truncate max-w-[200px]">{r.website ?? "—"}</TableCell>
-                      <TableCell className="text-sm">{r.country ?? "—"}</TableCell>
-                      <TableCell className="text-sm">{r.industry ?? "—"}</TableCell>
-                      <TableCell><ImportStatusBadge status={r.status} /></TableCell>
-                      <TableCell className="text-xs text-destructive">{r.errorMessage ?? ""}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </Card>
-      )}
     </div>
   );
 }
