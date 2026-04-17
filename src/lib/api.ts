@@ -475,6 +475,20 @@ export const api = {
     };
   },
 
+  // Clear all collected data for a single job
+  async clearJobContacts(jobId: string) {
+    const r1 = await supabase.from("contacts").delete().eq("crawl_job_id", jobId);
+    if (r1.error) throw r1.error;
+    const r2 = await supabase.from("contact_people").delete().eq("crawl_job_id", jobId);
+    if (r2.error) throw r2.error;
+    const r3 = await supabase.from("source_pages").delete().eq("crawl_job_id", jobId);
+    if (r3.error) throw r3.error;
+    const r4 = await supabase.from("crawl_jobs").update({
+      contacts_found: 0, people_found: 0, pages_crawled: 0, companies_found: 0, progress: 0,
+    }).eq("id", jobId);
+    if (r4.error) throw r4.error;
+  },
+
   // Reseed / clear
   async clearAll() {
     const { error } = await supabase.rpc("clear_all_data");
