@@ -23,6 +23,32 @@ const CONTACT_PAGE_PATHS = ["contact", "contacts"] as const;
 const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
 const tickers = new Map<string, number>();
+const importedCompanyCache = new Map<string, { ids: string[]; ticksSinceRefresh: number }>();
+
+async function getUploadedJobCompanies(jobId: string): Promise<string[] | null> {
+  const cached = importedCompanyCache.get(jobId);
+  if (cached && cached.ticksSinceRefresh < 10) {
+    cached.ticksSinceRefresh++;
+    return cached.ids;
+  }
+  const { data: imports } = await supabase
+    .from("imports")
+    .select("id")
+    .eq("crawl_job_id", jobId);
+  const importIds = (imports ?? []).map((i: any) => i.id);
+  if (importIds.length === 0) {
+    importedCompanyCache.set(jobId, { ids: [], ticksSinceRefresh: 0 });
+    return [];
+  }
+  const { data: rows } = await supabase
+    .from("import_rows")
+    .select("matched_company_id")
+    .in("import_id", importIds)
+    .not("matched_company_id", "is", null);
+  const ids = Array.from(new Set((rows ?? []).map((r: any) => r.matched_company_id).filter(Boolean)));
+  importedCompanyCache.set(jobId, { ids, ticksSinceRefresh: 0 });
+  return ids;
+}
 
 export function startSimulator(jobId: string) {
   if (tickers.has(jobId)) return;
@@ -51,10 +77,27 @@ async function tick(jobId: string) {
     return;
   }
 
-  // Pick a random company to "crawl"
-  const { data: companies } = await supabase.from("companies").select("id, name, domain, country, industry").limit(50);
-  if (!companies || companies.length === 0) return;
-  const target = companies[Math.floor(Math.random() * companies.length)] as any;
+  // Pick a "crawl" target — for uploaded jobs, only from the import file's matched companies
+  let target: any = null;
+  if (job.sourceType === "uploaded") {
+    const ids = await getUploadedJobCompanies(jobId);
+    if (!ids || ids.length === 0) {
+      await api.addLog(jobId, "warn", "Waiting for import matches before crawling…");
+      return;
+    }
+    const pickedId = ids[Math.floor(Math.random() * ids.length)];
+    const { data: company } = await supabase
+      .from("companies")
+      .select("id, name, domain, country, industry")
+      .eq("id", pickedId)
+      .maybeSingle();
+    if (!company) return;
+    target = company;
+  } else {
+    const { data: companies } = await supabase.from("companies").select("id, name, domain, country, industry").limit(50);
+    if (!companies || companies.length === 0) return;
+    target = companies[Math.floor(Math.random() * companies.length)];
+  }
 
   const pageType = pick(PAGE_TYPES);
   const urlPath = pageType === "homepage"
