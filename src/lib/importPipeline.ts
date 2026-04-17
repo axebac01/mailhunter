@@ -124,11 +124,24 @@ export async function runImport(args: {
           else { companyId = created.id; status = "matched"; matched++; }
         }
       } else {
-        // Try fuzzy match by name
+        // Name-only row: dedup case-insensitively, else create new company
+        const trimmedName = (ir.company_name ?? "").trim();
         const { data: byName } = await supabase.from("companies")
-          .select("id, domain").ilike("name", ir.company_name).limit(1).maybeSingle();
-        if (byName) { companyId = byName.id; status = "partial_match"; }
-        else { status = "not_found"; }
+          .select("id").ilike("name", trimmedName).limit(1).maybeSingle();
+        if (byName) {
+          companyId = byName.id;
+          status = options.ignoreDuplicates ? "duplicate" : "matched";
+          if (status === "matched") matched++;
+        } else {
+          const { data: created, error } = await supabase.from("companies").insert({
+            name: trimmedName,
+            country: ir.country,
+            industry: ir.industry,
+            notes: ir.notes,
+          }).select("id").single();
+          if (error) { status = "failed"; failed++; }
+          else { companyId = created.id; status = "matched"; matched++; }
+        }
       }
 
       await api.updateImportRow(ir.id, {
