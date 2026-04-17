@@ -167,6 +167,16 @@ export default function ImportDetail() {
                 <Link to={`/jobs/${imp.crawlJobId}`}><Briefcase className="h-4 w-4" /> View job</Link>
               </Button>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={matchedRows.length === 0 || createJobMut.isPending}
+              title={matchedRows.length === 0 ? "No matched companies to seed a job" : undefined}
+              onClick={() => createJobMut.mutate()}
+            >
+              {createJobMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {imp.crawlJobId ? "Recreate job" : "Create job from matched"} ({matchedRows.length})
+            </Button>
             <ExportButton selectedCount={selected.size} onExport={handleExport} />
           </div>
         }
