@@ -1,21 +1,34 @@
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { Briefcase, PlayCircle, Building2, Mail, Users, Upload, Download, Plus, ArrowRight, Activity } from "lucide-react";
-import { useStore } from "@/store/useStore";
+import { api } from "@/lib/api";
 import { PageHeader } from "@/components/app/PageHeader";
 import { KpiCard } from "@/components/app/KpiCard";
 import { SectionCard } from "@/components/app/SectionCard";
 import { JobStatusBadge, ContactTypeBadge } from "@/components/app/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { fmtNum, fmtRelative } from "@/lib/format";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export default function Dashboard() {
-  const { jobs, companies, contacts, people, imports, exportsCompleted, activity } = useStore();
-  const activeJobs = jobs.filter((j) => j.status === "running" || j.status === "scheduled" || j.status === "paused").length;
+  const kpis = useQuery({ queryKey: ["kpis"], queryFn: () => api.kpis() });
+  const jobs = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
+  const imports = useQuery({ queryKey: ["imports"], queryFn: () => api.listImports() });
+  const contacts = useQuery({ queryKey: ["contacts"], queryFn: () => api.listContacts() });
+  const people = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople() });
 
-  const recentJobs = [...jobs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
-  const recentImports = [...imports].sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt)).slice(0, 5);
-  const latestContacts = [...contacts].sort((a, b) => b.foundAt.localeCompare(a.foundAt)).slice(0, 5);
-  const latestPeople = [...people].sort((a, b) => b.foundAt.localeCompare(a.foundAt)).slice(0, 5);
+  const recentJobs = (jobs.data ?? []).slice(0, 5);
+  const recentImports = (imports.data ?? []).slice(0, 5);
+  const latestContacts = (contacts.data ?? []).slice(0, 5);
+  const latestPeople = (people.data ?? []).slice(0, 5);
+
+  // Activity feed: synthesize from recent jobs/imports/exports
+  const activity = [
+    ...(jobs.data ?? []).slice(0, 5).map((j) => ({ id: `j_${j.id}`, message: `Job ${j.status}: ${j.name}`, ts: j.lastRunAt ?? j.createdAt })),
+    ...(imports.data ?? []).slice(0, 5).map((i) => ({ id: `i_${i.id}`, message: `Imported ${i.fileName} (${i.totalRows} rows)`, ts: i.createdAt })),
+  ].sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, 12);
+
+  const k = kpis.data;
 
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
@@ -24,24 +37,26 @@ export default function Dashboard() {
         description="Discover, organize, and export publicly available company contact data."
         actions={
           <>
-            <Button asChild variant="outline" size="sm">
-              <Link to="/imports"><Upload className="h-4 w-4" /> Import companies</Link>
-            </Button>
-            <Button asChild size="sm">
-              <Link to="/jobs/new"><Plus className="h-4 w-4" /> Create job</Link>
-            </Button>
+            <Button asChild variant="outline" size="sm"><Link to="/imports"><Upload className="h-4 w-4" /> Import companies</Link></Button>
+            <Button asChild size="sm"><Link to="/jobs/new"><Plus className="h-4 w-4" /> Create job</Link></Button>
           </>
         }
       />
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 mb-6">
-        <KpiCard label="Total jobs" value={fmtNum(jobs.length)} icon={<Briefcase className="h-4 w-4" />} />
-        <KpiCard label="Active jobs" value={fmtNum(activeJobs)} icon={<PlayCircle className="h-4 w-4" />} hint="Running, scheduled or paused" />
-        <KpiCard label="Companies" value={fmtNum(companies.length)} icon={<Building2 className="h-4 w-4" />} />
-        <KpiCard label="Contact records" value={fmtNum(contacts.length)} icon={<Mail className="h-4 w-4" />} hint="Generic only" />
-        <KpiCard label="People records" value={fmtNum(people.length)} icon={<Users className="h-4 w-4" />} hint="Public metadata" />
-        <KpiCard label="Imports" value={fmtNum(imports.length)} icon={<Upload className="h-4 w-4" />} />
-        <KpiCard label="Exports" value={fmtNum(exportsCompleted)} icon={<Download className="h-4 w-4" />} hint="Completed" />
+        {kpis.isLoading || !k ? (
+          Array.from({ length: 7 }).map((_, i) => <Skeleton key={i} className="h-24 rounded-xl" />)
+        ) : (
+          <>
+            <KpiCard label="Total jobs" value={fmtNum(k.totalJobs)} icon={<Briefcase className="h-4 w-4" />} />
+            <KpiCard label="Active jobs" value={fmtNum(k.activeJobs)} icon={<PlayCircle className="h-4 w-4" />} hint="Running, scheduled or paused" />
+            <KpiCard label="Companies" value={fmtNum(k.companies)} icon={<Building2 className="h-4 w-4" />} />
+            <KpiCard label="Contact records" value={fmtNum(k.contacts)} icon={<Mail className="h-4 w-4" />} hint="Generic only" />
+            <KpiCard label="People records" value={fmtNum(k.people)} icon={<Users className="h-4 w-4" />} hint="Public metadata" />
+            <KpiCard label="Imports" value={fmtNum(k.imports)} icon={<Upload className="h-4 w-4" />} />
+            <KpiCard label="Exports" value={fmtNum(k.exports)} icon={<Download className="h-4 w-4" />} hint="Completed" />
+          </>
+        )}
       </div>
 
       <SectionCard title="Quick actions" className="mb-6">
@@ -64,11 +79,7 @@ export default function Dashboard() {
       </SectionCard>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        <SectionCard
-          title="Recent jobs"
-          action={<Button asChild variant="ghost" size="sm"><Link to="/jobs">View all <ArrowRight className="h-3 w-3" /></Link></Button>}
-          noPadding
-        >
+        <SectionCard title="Recent jobs" action={<Button asChild variant="ghost" size="sm"><Link to="/jobs">View all <ArrowRight className="h-3 w-3" /></Link></Button>} noPadding>
           <div className="divide-y divide-border">
             {recentJobs.map((j) => (
               <Link key={j.id} to={`/jobs/${j.id}`} className="flex items-center justify-between px-5 py-3 hover:bg-muted/40 transition-colors">
@@ -82,19 +93,15 @@ export default function Dashboard() {
           </div>
         </SectionCard>
 
-        <SectionCard
-          title="Recent imports"
-          action={<Button asChild variant="ghost" size="sm"><Link to="/imports">View all <ArrowRight className="h-3 w-3" /></Link></Button>}
-          noPadding
-        >
+        <SectionCard title="Recent imports" action={<Button asChild variant="ghost" size="sm"><Link to="/imports">View all <ArrowRight className="h-3 w-3" /></Link></Button>} noPadding>
           <div className="divide-y divide-border">
             {recentImports.map((i) => (
               <div key={i.id} className="flex items-center justify-between px-5 py-3">
                 <div>
                   <p className="text-sm font-medium text-foreground">{i.fileName}</p>
-                  <p className="text-xs text-muted-foreground">{i.totalRows} rows · {i.matched} matched · {fmtRelative(i.uploadedAt)}</p>
+                  <p className="text-xs text-muted-foreground">{i.totalRows} rows · {i.matchedRows} matched · {fmtRelative(i.createdAt)}</p>
                 </div>
-                <span className="text-xs text-muted-foreground">{i.jobName ?? "—"}</span>
+                <span className="text-xs text-muted-foreground">{i.status}</span>
               </div>
             ))}
           </div>
@@ -106,7 +113,7 @@ export default function Dashboard() {
           <div className="divide-y divide-border">
             {latestContacts.map((c) => (
               <div key={c.id} className="px-5 py-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-3">
                   <p className="text-sm font-medium truncate">{c.contactValue}</p>
                   <ContactTypeBadge type={c.contactType} />
                 </div>
@@ -121,7 +128,7 @@ export default function Dashboard() {
             {latestPeople.map((p) => (
               <div key={p.id} className="px-5 py-3">
                 <p className="text-sm font-medium">{p.fullName}</p>
-                <p className="text-xs text-muted-foreground">{p.roleTitle} · {p.companyName}</p>
+                <p className="text-xs text-muted-foreground">{p.roleTitle ?? "—"} · {p.companyName}</p>
               </div>
             ))}
           </div>
@@ -129,12 +136,12 @@ export default function Dashboard() {
 
         <SectionCard title="System activity" noPadding>
           <div className="divide-y divide-border max-h-80 overflow-auto scrollbar-thin">
-            {activity.slice(0, 12).map((a) => (
+            {activity.map((a) => (
               <div key={a.id} className="px-5 py-3 flex items-start gap-3">
                 <Activity className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
                 <div className="min-w-0">
                   <p className="text-sm text-foreground">{a.message}</p>
-                  <p className="text-xs text-muted-foreground">{fmtRelative(a.timestamp)}</p>
+                  <p className="text-xs text-muted-foreground">{fmtRelative(a.ts)}</p>
                 </div>
               </div>
             ))}

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useStore } from "@/store/useStore";
+import { api, type Weekday } from "@/lib/api";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { Button } from "@/components/ui/button";
@@ -11,33 +12,21 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import type { Job, Weekday } from "@/types";
 
-const INDUSTRIES = ["SaaS", "FinTech", "Healthcare", "Manufacturing", "Logistics", "Marketing Agency", "E-commerce", "Construction", "Consulting", "Real Estate", "Education", "Renewable Energy"];
-const COUNTRIES = ["United States", "Germany", "United Kingdom", "France", "Netherlands", "Spain", "Sweden", "Canada", "Australia", "Italy"];
+const INDUSTRIES = ["Software","Manufacturing","Finance","Healthcare","Logistics","Food & Beverage","Biotech","Aerospace","Real Estate","Media","Pharmaceuticals","Energy"];
+const COUNTRIES = ["United States","Germany","United Kingdom","France","Netherlands","Spain","Sweden","Italy","Japan","Norway","Denmark","Finland","Switzerland","Austria","Belgium","Portugal","Ireland"];
 
 export default function CreateJob() {
   const navigate = useNavigate();
-  const { addJob } = useStore();
-
+  const qc = useQueryClient();
   const [form, setForm] = useState({
-    name: "",
-    industry: "",
-    country: "",
-    maxCompanies: 100,
-    weekdays: ["mon", "tue", "wed", "thu", "fri"] as Weekday[],
-    startTime: "09:00",
-    endTime: "18:00",
-    collectGenericEmails: true,
-    collectPhones: true,
-    collectContactForms: true,
-    collectPersonNames: true,
-    collectPersonRoles: true,
-    collectDepartments: false,
-    deduplicate: true,
-    notes: "",
+    name: "", industry: "", country: "", maxCompanies: 100,
+    weekdays: ["mon","tue","wed","thu","fri"] as Weekday[],
+    startTime: "09:00", endTime: "18:00",
+    collectGenericEmails: true, collectPhones: true, collectContactForms: true,
+    collectPersonNames: true, collectPersonRoles: true, collectDepartments: false,
+    deduplicate: true, notes: "",
   });
-
   const update = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   const validate = () => {
@@ -45,52 +34,49 @@ export default function CreateJob() {
     if (!form.industry || !form.country) return "Industry and country are required.";
     if (form.maxCompanies <= 0) return "Max companies must be greater than 0.";
     if (form.endTime <= form.startTime) return "End time must be after start time.";
-    const anyCollect = form.collectGenericEmails || form.collectPhones || form.collectContactForms || form.collectPersonNames || form.collectPersonRoles || form.collectDepartments;
-    if (!anyCollect) return "Select at least one collection option.";
+    const any = form.collectGenericEmails || form.collectPhones || form.collectContactForms || form.collectPersonNames || form.collectPersonRoles || form.collectDepartments;
+    if (!any) return "Select at least one collection option.";
     return null;
   };
+
+  const create = useMutation({
+    mutationFn: (status: "draft" | "scheduled") => api.createJob({
+      name: form.name, industry: form.industry, country: form.country,
+      max_companies: form.maxCompanies,
+      allowed_start_time: form.startTime, allowed_end_time: form.endTime,
+      allowed_days: form.weekdays,
+      include_generic_emails: form.collectGenericEmails,
+      include_phones: form.collectPhones,
+      include_contact_forms: form.collectContactForms,
+      include_contact_person_names: form.collectPersonNames,
+      include_contact_person_roles: form.collectPersonRoles,
+      include_departments: form.collectDepartments,
+      deduplicate: form.deduplicate,
+      notes: form.notes || null,
+      status,
+    }),
+    onSuccess: (j, status) => {
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+      toast.success(status === "draft" ? "Saved as draft" : "Job scheduled");
+      navigate(`/jobs/${j.id}`);
+    },
+    onError: (e: any) => toast.error(e.message ?? "Failed to create job"),
+  });
 
   const submit = (status: "draft" | "scheduled") => {
     const err = validate();
     if (err) return toast.error(err);
-    const job: Job = {
-      id: `job_${Math.random().toString(36).slice(2, 10)}`,
-      name: form.name,
-      industry: form.industry,
-      country: form.country,
-      status,
-      maxCompanies: form.maxCompanies,
-      allowedWeekdays: form.weekdays,
-      startTime: form.startTime,
-      endTime: form.endTime,
-      collectGenericEmails: form.collectGenericEmails,
-      collectPhones: form.collectPhones,
-      collectContactForms: form.collectContactForms,
-      collectPersonNames: form.collectPersonNames,
-      collectPersonRoles: form.collectPersonRoles,
-      collectDepartments: form.collectDepartments,
-      deduplicate: form.deduplicate,
-      notes: form.notes,
-      createdAt: new Date().toISOString(),
-      lastRunAt: null,
-      companiesFound: 0,
-      contactsFound: 0,
-      peopleFound: 0,
-      pagesCrawled: 0,
-      progress: 0,
-    };
-    addJob(job);
-    toast.success(status === "draft" ? "Saved as draft" : "Job scheduled");
-    navigate(`/jobs/${job.id}`);
+    create.mutate(status);
   };
 
   const collectionOptions = [
-    ["collectGenericEmails", "Collect generic public emails", "info@, sales@, contact@, hello@, support@, office@"],
-    ["collectPhones", "Collect phone numbers", "Public company phone numbers"],
-    ["collectContactForms", "Collect contact forms", "URLs of public contact pages"],
-    ["collectPersonNames", "Collect contact person names", "Public names only"],
-    ["collectPersonRoles", "Collect contact person roles", "Public role titles"],
-    ["collectDepartments", "Collect department names", "Public departments"],
+    ["collectGenericEmails","Collect generic public emails","info@, sales@, contact@, hello@, support@, office@"],
+    ["collectPhones","Collect phone numbers","Public company phone numbers"],
+    ["collectContactForms","Collect contact forms","URLs of public contact pages"],
+    ["collectPersonNames","Collect contact person names","Public names only"],
+    ["collectPersonRoles","Collect contact person roles","Public role titles"],
+    ["collectDepartments","Collect department names","Public departments"],
   ] as const;
 
   return (
@@ -100,8 +86,8 @@ export default function CreateJob() {
         description="Configure a research job to discover public company contact data."
         actions={
           <>
-            <Button variant="outline" size="sm" onClick={() => submit("draft")}>Save as draft</Button>
-            <Button size="sm" onClick={() => submit("scheduled")}>Schedule job</Button>
+            <Button variant="outline" size="sm" onClick={() => submit("draft")} disabled={create.isPending}>Save as draft</Button>
+            <Button size="sm" onClick={() => submit("scheduled")} disabled={create.isPending}>Schedule job</Button>
           </>
         }
       />
@@ -111,8 +97,7 @@ export default function CreateJob() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="md:col-span-2">
               <Label htmlFor="name">Job name *</Label>
-              <Input id="name" className="mt-1.5" placeholder="e.g. SaaS outreach — Germany Q2"
-                value={form.name} onChange={(e) => update("name", e.target.value)} />
+              <Input id="name" className="mt-1.5" placeholder="e.g. SaaS outreach — Germany Q2" value={form.name} onChange={(e) => update("name", e.target.value)} />
             </div>
             <div>
               <Label>Industry *</Label>
@@ -130,8 +115,7 @@ export default function CreateJob() {
             </div>
             <div>
               <Label htmlFor="max">Max companies *</Label>
-              <Input id="max" type="number" min={1} className="mt-1.5"
-                value={form.maxCompanies} onChange={(e) => update("maxCompanies", parseInt(e.target.value) || 0)} />
+              <Input id="max" type="number" min={1} className="mt-1.5" value={form.maxCompanies} onChange={(e) => update("maxCompanies", parseInt(e.target.value) || 0)} />
             </div>
           </div>
         </SectionCard>
@@ -141,20 +125,16 @@ export default function CreateJob() {
             <div>
               <Label className="mb-2 block">Allowed weekdays</Label>
               <ToggleGroup type="multiple" value={form.weekdays} onValueChange={(v) => update("weekdays", v as Weekday[])} className="justify-start">
-                {(["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as Weekday[]).map((d) => (
+                {(["mon","tue","wed","thu","fri","sat","sun"] as Weekday[]).map((d) => (
                   <ToggleGroupItem key={d} value={d} className="uppercase text-xs">{d}</ToggleGroupItem>
                 ))}
               </ToggleGroup>
             </div>
             <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="start">Start time</Label>
-                <Input id="start" type="time" className="mt-1.5" value={form.startTime} onChange={(e) => update("startTime", e.target.value)} />
-              </div>
-              <div>
-                <Label htmlFor="end">End time</Label>
-                <Input id="end" type="time" className="mt-1.5" value={form.endTime} onChange={(e) => update("endTime", e.target.value)} />
-              </div>
+              <div><Label htmlFor="start">Start time</Label>
+                <Input id="start" type="time" className="mt-1.5" value={form.startTime} onChange={(e) => update("startTime", e.target.value)} /></div>
+              <div><Label htmlFor="end">End time</Label>
+                <Input id="end" type="time" className="mt-1.5" value={form.endTime} onChange={(e) => update("endTime", e.target.value)} /></div>
             </div>
           </div>
         </SectionCard>
@@ -164,18 +144,12 @@ export default function CreateJob() {
             {collectionOptions.map(([key, label, hint]) => (
               <label key={key} className="flex items-start gap-3 p-3 rounded-md border border-border hover:bg-muted/40 cursor-pointer">
                 <Checkbox checked={form[key]} onCheckedChange={(v) => update(key, !!v)} className="mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium">{label}</p>
-                  <p className="text-xs text-muted-foreground">{hint}</p>
-                </div>
+                <div><p className="text-sm font-medium">{label}</p><p className="text-xs text-muted-foreground">{hint}</p></div>
               </label>
             ))}
             <label className="flex items-start gap-3 p-3 rounded-md border border-border hover:bg-muted/40 cursor-pointer md:col-span-2">
               <Checkbox checked={form.deduplicate} onCheckedChange={(v) => update("deduplicate", !!v)} className="mt-0.5" />
-              <div>
-                <p className="text-sm font-medium">Deduplicate results</p>
-                <p className="text-xs text-muted-foreground">Skip rows already present in the database.</p>
-              </div>
+              <div><p className="text-sm font-medium">Deduplicate results</p><p className="text-xs text-muted-foreground">Skip rows already present in the database.</p></div>
             </label>
           </div>
         </SectionCard>

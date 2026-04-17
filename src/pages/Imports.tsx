@@ -1,101 +1,99 @@
-import { useState, useRef } from "react";
+import { useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Upload, FileText, X, CheckCircle2, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
-import { useStore } from "@/store/useStore";
+import { api } from "@/lib/api";
+import { autoMap, parseFile, runImport, type Mapping, type ParsedFile } from "@/lib/importPipeline";
+import { exportImportResults } from "@/lib/exporters";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ImportStatusBadge } from "@/components/app/StatusBadge";
+import { ExportButton } from "@/components/app/ExportButton";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtNum, fmtRelative } from "@/lib/format";
-import type { ImportRecord, ImportRow, ImportStatus } from "@/types";
 import { cn } from "@/lib/utils";
 
-const TARGET_FIELDS = ["company_name", "country", "website", "industry", "notes"] as const;
-type Target = (typeof TARGET_FIELDS)[number];
+const TARGET_FIELDS = ["company_name","country","website","industry","notes"] as const;
 
 export default function Imports() {
   const fileRef = useRef<HTMLInputElement>(null);
-  const { imports, jobs, addImport, deleteImport } = useStore();
+  const qc = useQueryClient();
+  const { data: imports = [] } = useQuery({ queryKey: ["imports"], queryFn: () => api.listImports(), refetchInterval: 3000 });
+  const { data: jobs = [] } = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
+
   const [dragOver, setDragOver] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const [headers, setHeaders] = useState<string[]>([]);
-  const [preview, setPreview] = useState<string[][]>([]);
-  const [mapping, setMapping] = useState<Record<string, Target | "ignore">>({});
+  const [parsed, setParsed] = useState<ParsedFile | null>(null);
+  const [mapping, setMapping] = useState<Mapping>({});
   const [opts, setOpts] = useState({ ignoreDuplicates: true, overwriteEmpty: false, autoStart: false, attachJob: "none" });
+  const [progress, setProgress] = useState<{ p: number; t: number } | null>(null);
+
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const detailRows = useQuery({
+    queryKey: ["importRows", detailId],
+    queryFn: () => api.listImportRows(detailId!),
+    enabled: !!detailId,
+  });
 
   const handleFile = async (f: File) => {
     setFile(f);
-    const text = await f.text();
-    const lines = text.split(/\r?\n/).filter(Boolean).slice(0, 11);
-    const split = lines.map((l) => l.split(/[,;\t]/).map((c) => c.trim().replace(/^"|"$/g, "")));
-    if (split.length === 0) return;
-    setHeaders(split[0]);
-    setPreview(split.slice(1));
-    const m: Record<string, Target | "ignore"> = {};
-    split[0].forEach((h) => {
-      const lo = h.toLowerCase();
-      const match = TARGET_FIELDS.find((t) => lo.includes(t.replace("_", "")) || lo.includes(t));
-      m[h] = match ?? "ignore";
-    });
-    setMapping(m);
+    try {
+      const p = await parseFile(f);
+      setParsed(p);
+      setMapping(autoMap(p.headers));
+    } catch (e: any) {
+      toast.error(`Failed to parse: ${e.message ?? e}`);
+    }
   };
 
   const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const f = e.dataTransfer.files?.[0];
-    if (f) handleFile(f);
+    e.preventDefault(); setDragOver(false);
+    const f = e.dataTransfer.files?.[0]; if (f) handleFile(f);
   };
 
-  const runImport = () => {
-    if (!file || !headers.length) return toast.error("Upload a file first");
-    const companyCol = Object.entries(mapping).find(([, v]) => v === "company_name")?.[0];
-    if (!companyCol) return toast.error("Map a column to company_name");
-    const countryCol = Object.entries(mapping).find(([, v]) => v === "country")?.[0];
-    const websiteCol = Object.entries(mapping).find(([, v]) => v === "website")?.[0];
-    const industryCol = Object.entries(mapping).find(([, v]) => v === "industry")?.[0];
+  const importMut = useMutation({
+    mutationFn: () => runImport({
+      file: file!, parsed: parsed!,
+      mapping,
+      options: {
+        attachJobId: opts.attachJob === "none" ? null : opts.attachJob,
+        ignoreDuplicates: opts.ignoreDuplicates,
+        overwriteEmpty: opts.overwriteEmpty,
+        autoStart: opts.autoStart,
+      },
+      onProgress: (p, t) => setProgress({ p, t }),
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["imports"] });
+      qc.invalidateQueries({ queryKey: ["companies"] });
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+      toast.success(`Imported ${file?.name}`);
+      setFile(null); setParsed(null); setMapping({}); setProgress(null);
+    },
+    onError: (e: any) => { toast.error(e.message ?? "Import failed"); setProgress(null); },
+  });
 
-    const rows: ImportRow[] = preview.map((r, i) => {
-      const idx = (col?: string) => (col ? headers.indexOf(col) : -1);
-      const status: ImportStatus = ["matched", "matched", "matched", "partial_match", "duplicate", "not_found"][i % 6] as ImportStatus;
-      return {
-        id: `ir_${i}_${Math.random().toString(36).slice(2, 6)}`,
-        companyName: r[idx(companyCol)] ?? "",
-        country: countryCol ? r[idx(countryCol)] : undefined,
-        website: websiteCol ? r[idx(websiteCol)] : undefined,
-        industry: industryCol ? r[idx(industryCol)] : undefined,
-        status,
-      };
-    });
-    const total = rows.length;
-    const job = opts.attachJob !== "none" ? jobs.find((j) => j.id === opts.attachJob) : null;
-    const record: ImportRecord = {
-      id: `imp_${Math.random().toString(36).slice(2, 8)}`,
-      fileName: file.name,
-      uploadedAt: new Date().toISOString(),
-      totalRows: total,
-      matched: rows.filter((r) => r.status === "matched").length,
-      partial: rows.filter((r) => r.status === "partial_match").length,
-      notFound: rows.filter((r) => r.status === "not_found").length,
-      duplicates: rows.filter((r) => r.status === "duplicate").length,
-      failed: rows.filter((r) => r.status === "failed").length,
-      jobId: job?.id ?? null,
-      jobName: job?.name ?? null,
-      rows,
-    };
-    addImport(record);
-    toast.success(`Imported ${total} rows from ${file.name}`);
-    setFile(null);
-    setHeaders([]);
-    setPreview([]);
-    setMapping({});
+  const del = useMutation({
+    mutationFn: (id: string) => api.deleteImport(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["imports"] }); qc.invalidateQueries({ queryKey: ["kpis"] }); toast.success("Import deleted"); },
+  });
+
+  const exportDetail = async (_s: any, format: "csv"|"xlsx") => {
+    if (!detailRows.data) return;
+    const rows = detailRows.data.map((r) => ({
+      company_name: r.companyName, country: r.country ?? "", website: r.website ?? "",
+      industry: r.industry ?? "", notes: r.notes ?? "", status: r.status,
+      matched_domain: r.matchedDomain ?? "", error: r.errorMessage ?? "",
+    }));
+    const name = await exportImportResults(rows, format);
+    qc.invalidateQueries({ queryKey: ["kpis"] });
+    toast.success(`Exported ${name}`);
   };
 
   return (
@@ -129,9 +127,18 @@ export default function Imports() {
               <div className="flex items-center gap-2">
                 <FileText className="h-4 w-4 text-primary" />
                 <span className="text-sm font-medium">{file.name}</span>
-                <span className="text-xs text-muted-foreground">{preview.length} preview rows</span>
+                <span className="text-xs text-muted-foreground">{parsed?.rows.length ?? 0} rows</span>
               </div>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setFile(null); setHeaders([]); setPreview([]); }}><X className="h-4 w-4" /></Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setFile(null); setParsed(null); setMapping({}); }}><X className="h-4 w-4" /></Button>
+            </div>
+          )}
+
+          {progress && (
+            <div className="mt-4">
+              <p className="text-xs text-muted-foreground mb-1">Processing {progress.p} / {progress.t}</p>
+              <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                <div className="h-full bg-primary transition-all" style={{ width: `${(progress.p / progress.t) * 100}%` }} />
+              </div>
             </div>
           )}
         </SectionCard>
@@ -144,7 +151,7 @@ export default function Imports() {
                 <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">Create new job from import</SelectItem>
-                  {jobs.slice(0, 10).map((j) => <SelectItem key={j.id} value={j.id}>{j.name}</SelectItem>)}
+                  {jobs.slice(0, 20).map((j) => <SelectItem key={j.id} value={j.id}>{j.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -155,18 +162,18 @@ export default function Imports() {
         </SectionCard>
       </div>
 
-      {headers.length > 0 && (
+      {parsed && parsed.headers.length > 0 && (
         <>
           <SectionCard title="Column mapping" description="Map source columns to target fields" className="mb-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {headers.map((h) => (
+              {parsed.headers.map((h) => (
                 <div key={h} className="flex items-center gap-3 p-3 rounded-md border border-border">
                   <div className="flex-1 min-w-0">
                     <p className="text-xs text-muted-foreground">Source column</p>
                     <p className="font-mono text-sm truncate">{h}</p>
                   </div>
                   <ArrowRight className="h-4 w-4 text-muted-foreground" />
-                  <Select value={mapping[h] ?? "ignore"} onValueChange={(v) => setMapping({ ...mapping, [h]: v as Target | "ignore" })}>
+                  <Select value={mapping[h] ?? "ignore"} onValueChange={(v) => setMapping({ ...mapping, [h]: v as Mapping[string] })}>
                     <SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="ignore">Ignore</SelectItem>
@@ -177,60 +184,101 @@ export default function Imports() {
               ))}
             </div>
             <div className="flex justify-end mt-4 gap-2">
-              <Button variant="outline" onClick={() => { setFile(null); setHeaders([]); setPreview([]); }}>Cancel</Button>
-              <Button onClick={runImport}><CheckCircle2 className="h-4 w-4" /> Run import</Button>
+              <Button variant="outline" onClick={() => { setFile(null); setParsed(null); setMapping({}); }}>Cancel</Button>
+              <Button onClick={() => importMut.mutate()} disabled={importMut.isPending}>
+                <CheckCircle2 className="h-4 w-4" /> {importMut.isPending ? "Running…" : "Run import"}
+              </Button>
             </div>
           </SectionCard>
 
           <SectionCard title="Preview" description="First 10 rows" noPadding className="mb-6">
-            <Table>
-              <TableHeader><TableRow>{headers.map((h) => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader>
-              <TableBody>
-                {preview.map((r, i) => (
-                  <TableRow key={i}>
-                    {r.map((c, j) => <TableCell key={j} className="text-sm">{c}</TableCell>)}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <div className="overflow-auto">
+              <Table>
+                <TableHeader><TableRow>{parsed.headers.map((h) => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader>
+                <TableBody>
+                  {parsed.rows.slice(0, 10).map((r, i) => (
+                    <TableRow key={i}>{r.map((cell, j) => <TableCell key={j} className="text-sm">{cell}</TableCell>)}</TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           </SectionCard>
         </>
       )}
 
       <SectionCard title="Import history" noPadding>
         {imports.length === 0 ? (
-          <EmptyState
-            icon={<Upload className="h-5 w-5" />}
-            description="No imports yet. Upload a CSV or Excel file with company names to get started."
-          />
+          <EmptyState icon={<Upload className="h-5 w-5" />} description="No imports yet. Upload a CSV or Excel file with company names to get started." />
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>File</TableHead><TableHead>Uploaded</TableHead><TableHead>Job</TableHead>
-                <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Matched</TableHead>
-                <TableHead className="text-right">Partial</TableHead><TableHead className="text-right">Not found</TableHead>
-                <TableHead className="text-right">Duplicates</TableHead><TableHead className="w-12" />
+                <TableHead>File</TableHead><TableHead>Uploaded</TableHead><TableHead>Status</TableHead>
+                <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Processed</TableHead>
+                <TableHead className="text-right">Matched</TableHead><TableHead className="text-right">Failed</TableHead>
+                <TableHead className="text-right">Contacts</TableHead><TableHead className="text-right">People</TableHead>
+                <TableHead className="w-24" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {imports.map((i) => (
-                <TableRow key={i.id}>
+                <TableRow key={i.id} className="cursor-pointer" onClick={() => setDetailId(i.id)}>
                   <TableCell className="font-medium">{i.fileName}</TableCell>
-                  <TableCell className="text-muted-foreground text-sm">{fmtRelative(i.uploadedAt)}</TableCell>
-                  <TableCell className="text-muted-foreground text-sm">{i.jobName ?? "—"}</TableCell>
+                  <TableCell className="text-muted-foreground text-sm">{fmtRelative(i.createdAt)}</TableCell>
+                  <TableCell><ImportStatusBadge status={i.status} /></TableCell>
                   <TableCell className="text-right tabular-nums">{fmtNum(i.totalRows)}</TableCell>
-                  <TableCell className="text-right tabular-nums text-success">{i.matched}</TableCell>
-                  <TableCell className="text-right tabular-nums text-info">{i.partial}</TableCell>
-                  <TableCell className="text-right tabular-nums text-warning">{i.notFound}</TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">{i.duplicates}</TableCell>
-                  <TableCell><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { deleteImport(i.id); toast.success("Import deleted"); }}><X className="h-4 w-4" /></Button></TableCell>
+                  <TableCell className="text-right tabular-nums">{fmtNum(i.processedRows)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-success">{fmtNum(i.matchedRows)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-destructive">{fmtNum(i.failedRows)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{fmtNum(i.contactsFound)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{fmtNum(i.peopleFound)}</TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => del.mutate(i.id)}><X className="h-4 w-4" /></Button>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         )}
       </SectionCard>
+
+      {/* Inline import detail */}
+      {detailId && (
+        <Card className="mt-6 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold">Import details</h3>
+            <div className="flex gap-2">
+              <ExportButton onExport={exportDetail} disableSelected />
+              <Button variant="ghost" size="sm" onClick={() => setDetailId(null)}>Close</Button>
+            </div>
+          </div>
+          {detailRows.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : (
+            <div className="overflow-auto max-h-[500px]">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Company</TableHead><TableHead>Website</TableHead>
+                    <TableHead>Country</TableHead><TableHead>Industry</TableHead>
+                    <TableHead>Status</TableHead><TableHead>Error</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(detailRows.data ?? []).map((r) => (
+                    <TableRow key={r.id}>
+                      <TableCell className="font-medium">{r.companyName}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground truncate max-w-[200px]">{r.website ?? "—"}</TableCell>
+                      <TableCell className="text-sm">{r.country ?? "—"}</TableCell>
+                      <TableCell className="text-sm">{r.industry ?? "—"}</TableCell>
+                      <TableCell><ImportStatusBadge status={r.status} /></TableCell>
+                      <TableCell className="text-xs text-destructive">{r.errorMessage ?? ""}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
