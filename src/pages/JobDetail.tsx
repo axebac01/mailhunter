@@ -24,8 +24,8 @@ export default function JobDetail() {
   const qc = useQueryClient();
 
   const job = useQuery({ queryKey: ["job", id], queryFn: () => api.getJob(id), refetchInterval: 2500 });
-  const allContacts = useQuery({ queryKey: ["contacts"], queryFn: () => api.listContacts() });
-  const allPeople = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople() });
+  const allContacts = useQuery({ queryKey: ["contacts"], queryFn: () => api.listContacts(), refetchInterval: 2500 });
+  const allPeople = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople(), refetchInterval: 2500 });
   const logs = useQuery({ queryKey: ["logs", id], queryFn: () => api.listLogs(id), refetchInterval: 2500 });
   const sourcePages = useQuery({ queryKey: ["sourcePages", id], queryFn: () => api.listSourcePages({ jobId: id }), refetchInterval: 5000 });
 
