@@ -56,6 +56,20 @@ export default function JobDetail() {
     onSuccess: (j) => { qc.invalidateQueries({ queryKey: ["jobs"] }); toast.success("Duplicated"); navigate(`/jobs/${j.id}`); },
   });
 
+  const clearContacts = useMutation({
+    mutationFn: () => api.clearJobContacts(id),
+    onSuccess: () => {
+      toast.success("Cleared all contacts for this job");
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+      qc.invalidateQueries({ queryKey: ["people"] });
+      qc.invalidateQueries({ queryKey: ["sourcePages", id] });
+      qc.invalidateQueries({ queryKey: ["job", id] });
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Failed to clear"),
+  });
+
   useEffect(() => () => {/* keep simulator running across navigations */}, []);
 
   if (job.isLoading) return <div className="p-6">Loading…</div>;
