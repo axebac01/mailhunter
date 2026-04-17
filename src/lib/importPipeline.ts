@@ -45,6 +45,32 @@ function domainFrom(website: string | undefined | null): string | null {
   } catch { return null; }
 }
 
+// Best-effort domain resolution via the resolve-domain edge function.
+// Updates the company row with the discovered domain/website on success.
+async function tryResolveDomain(companyId: string, companyName: string, country: string | null | undefined): Promise<void> {
+  try {
+    const { data, error } = await supabase.functions.invoke("resolve-domain", {
+      body: { companyName, country: country ?? undefined },
+    });
+    if (error || !data) {
+      await supabase.from("companies").update({ domain_status: "failed" } as any).eq("id", companyId);
+      return;
+    }
+    if (data.domain && (data.confidence === "high" || data.confidence === "low")) {
+      await supabase.from("companies").update({
+        domain: data.domain,
+        website: data.website ?? `https://${data.domain}`,
+        source_url: data.evidenceUrl ?? null,
+        domain_status: "resolved",
+      } as any).eq("id", companyId);
+    } else {
+      await supabase.from("companies").update({ domain_status: "failed" } as any).eq("id", companyId);
+    }
+  } catch {
+    await supabase.from("companies").update({ domain_status: "failed" } as any).eq("id", companyId);
+  }
+}
+
 export interface ImportOptions {
   attachJobId: string | null;
   ignoreDuplicates: boolean;
