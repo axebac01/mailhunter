@@ -17,6 +17,8 @@ const ROLES: Array<[string, string]> = [
   ["VP of Sales","Sales"],["Customer Success Lead","Support"],["Plant Manager","Operations"],
 ];
 const PAGE_TYPES = ["homepage","contact","about","team","people"] as const;
+const CONTACT_PATHS = ["contact", "contacts", "contact-us"] as const;
+const CONTACT_PAGE_PATHS = ["contact", "contacts"] as const;
 
 const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
