@@ -132,7 +132,7 @@ export default function CreateJob() {
     ["collectContactForms","Collect contact forms","URLs of public contact pages"],
     ["collectPersonNames","Collect contact person names","Public names only"],
     ["collectPersonRoles","Collect contact person roles","Public role titles"],
-    ["collectDepartments","Collect department names","Public departments"],
+    
   ] as const;
 
   return (
