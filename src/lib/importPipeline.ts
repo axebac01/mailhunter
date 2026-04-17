@@ -177,5 +177,11 @@ export async function runImport(args: {
     failed_rows: failed,
   });
 
+  // Fire-and-forget: enqueue server-side batch domain resolution for this import.
+  // Runs with concurrency on the server so the user can close the tab.
+  supabase.functions.invoke("resolve-domains-batch", {
+    body: { importId: importRec.id },
+  }).catch(() => {});
+
   return importRec.id;
 }

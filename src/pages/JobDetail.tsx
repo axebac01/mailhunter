@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe, Trash2 } from "lucide-react";
+import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe, Trash2, Search } from "lucide-react";
 import { toast } from "sonner";
 import { api, type JobStatus } from "@/lib/api";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
