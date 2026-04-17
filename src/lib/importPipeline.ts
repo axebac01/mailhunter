@@ -45,31 +45,9 @@ function domainFrom(website: string | undefined | null): string | null {
   } catch { return null; }
 }
 
-// Best-effort domain resolution via the resolve-domain edge function.
-// Updates the company row with the discovered domain/website on success.
-async function tryResolveDomain(companyId: string, companyName: string, country: string | null | undefined): Promise<void> {
-  try {
-    const { data, error } = await supabase.functions.invoke("resolve-domain", {
-      body: { companyName, country: country ?? undefined },
-    });
-    if (error || !data) {
-      await supabase.from("companies").update({ domain_status: "failed" } as any).eq("id", companyId);
-      return;
-    }
-    if (data.domain && (data.confidence === "high" || data.confidence === "low")) {
-      await supabase.from("companies").update({
-        domain: data.domain,
-        website: data.website ?? `https://${data.domain}`,
-        source_url: data.evidenceUrl ?? null,
-        domain_status: "resolved",
-      } as any).eq("id", companyId);
-    } else {
-      await supabase.from("companies").update({ domain_status: "failed" } as any).eq("id", companyId);
-    }
-  } catch {
-    await supabase.from("companies").update({ domain_status: "failed" } as any).eq("id", companyId);
-  }
-}
+// Domain resolution for name-only rows is no longer done per-row in the import loop.
+// Instead, after the import completes we enqueue a single server-side batch via
+// `resolve-domains-batch` that handles all unresolved companies with concurrency.
 
 export interface ImportOptions {
   attachJobId: string | null;
@@ -150,8 +128,8 @@ export async function runImport(args: {
           else { companyId = created.id; status = "matched"; matched++; }
         }
       } else {
-        // Name-only row: dedup case-insensitively, else create new company,
-        // then try to resolve a real domain via Firecrawl.
+        // Name-only row: dedup case-insensitively, else create new company.
+        // Domain resolution happens at the end of the import as a batched server job.
         const trimmedName = (ir.company_name ?? "").trim();
         const { data: byName } = await supabase.from("companies")
           .select("id, domain").ilike("name", trimmedName).limit(1).maybeSingle();
@@ -159,8 +137,6 @@ export async function runImport(args: {
           companyId = byName.id;
           status = options.ignoreDuplicates ? "duplicate" : "matched";
           if (status === "matched") matched++;
-          // If the existing company still has no domain, try resolving.
-          if (!byName.domain) await tryResolveDomain(byName.id, trimmedName, ir.country);
         } else {
           const { data: created, error } = await supabase.from("companies").insert({
             name: trimmedName,
@@ -174,7 +150,6 @@ export async function runImport(args: {
             companyId = created.id;
             status = "matched";
             matched++;
-            await tryResolveDomain(created.id, trimmedName, ir.country);
           }
         }
       }
@@ -201,6 +176,12 @@ export async function runImport(args: {
     matched_rows: matched,
     failed_rows: failed,
   });
+
+  // Fire-and-forget: enqueue server-side batch domain resolution for this import.
+  // Runs with concurrency on the server so the user can close the tab.
+  supabase.functions.invoke("resolve-domains-batch", {
+    body: { importId: importRec.id },
+  }).catch(() => {});
 
   return importRec.id;
 }

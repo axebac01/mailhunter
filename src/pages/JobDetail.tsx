@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe, Trash2 } from "lucide-react";
+import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe, Trash2, Search } from "lucide-react";
 import { toast } from "sonner";
 import { api, type JobStatus } from "@/lib/api";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
@@ -92,6 +92,25 @@ export default function JobDetail() {
     onError: (e: any) => toast.error(e?.message ?? "Failed to clear"),
   });
 
+  const resolveDomains = useMutation({
+    mutationFn: async () => {
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data, error } = await supabase.functions.invoke("resolve-domains-batch", { body: { jobId: id } });
+      if (error) throw error;
+      return data as { resolved: number; failed: number; total: number; paymentRequired?: boolean };
+    },
+    onSuccess: (r) => {
+      if (r?.paymentRequired) {
+        toast.error("Firecrawl: insufficient credits. Top up to continue.");
+      } else {
+        toast.success(`Domain resolution: ${r?.resolved ?? 0} resolved, ${r?.failed ?? 0} failed (of ${r?.total ?? 0}).`);
+      }
+      qc.invalidateQueries({ queryKey: ["domainStats", id] });
+      qc.invalidateQueries({ queryKey: ["companies"] });
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Resolve domains failed"),
+  });
+
   useEffect(() => () => {/* keep simulator running across navigations */}, []);
 
   if (job.isLoading) return <div className="p-6">Loading…</div>;
@@ -121,6 +140,11 @@ export default function JobDetail() {
             <Button variant="outline" size="sm" onClick={() => updateStatus.mutate("paused")}><Pause className="h-4 w-4" /> Pause</Button>
             <Button variant="outline" size="sm" onClick={() => updateStatus.mutate("stopped")}><Square className="h-4 w-4" /> Stop</Button>
             <Button variant="outline" size="sm" onClick={() => dup.mutate()}><Copy className="h-4 w-4" /> Duplicate</Button>
+            {j.sourceType === "uploaded" && (
+              <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate()} disabled={resolveDomains.isPending}>
+                <Search className="h-4 w-4" /> {resolveDomains.isPending ? "Resolving…" : "Resolve domains"}
+              </Button>
+            )}
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
