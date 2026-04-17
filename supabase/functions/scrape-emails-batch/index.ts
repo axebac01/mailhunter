@@ -83,52 +83,67 @@ Deno.serve(async (req) => {
       }).eq("id", jobId);
     };
 
-    await runPool(todo, async (c: any) => {
-      // Re-check job status for cooperative cancel
-      const { data: cur } = await supabase.from("crawl_jobs").select("status").eq("id", jobId).maybeSingle();
-      if (cur?.status !== "running") return;
-
+    // Run scraping in the background so the HTTP response returns immediately
+    // (avoids the 150s edge function idle timeout for large jobs).
+    const work = (async () => {
       try {
-        const res = await fetch(`${SUPABASE_URL}/functions/v1/scrape-emails`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            companyId: c.id, domain: c.domain, jobId,
-            options: {
-              genericEmails: job.include_generic_emails,
-              personEmails: job.include_person_emails,
-              phones: job.include_phones,
-              contactForms: job.include_contact_forms,
-            },
-          }),
-        });
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          await supabase.from("crawl_logs").insert({
-            crawl_job_id: jobId, level: "error",
-            message: `Scrape failed for ${c.domain}: ${res.status} ${text.slice(0, 200)}`,
-          });
+        await runPool(todo, async (c: any) => {
+          const { data: cur } = await supabase.from("crawl_jobs").select("status").eq("id", jobId).maybeSingle();
+          if (cur?.status !== "running") return;
+
+          try {
+            const res = await fetch(`${SUPABASE_URL}/functions/v1/scrape-emails`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                companyId: c.id, domain: c.domain, jobId,
+                options: {
+                  genericEmails: job.include_generic_emails,
+                  personEmails: job.include_person_emails,
+                  phones: job.include_phones,
+                  contactForms: job.include_contact_forms,
+                },
+              }),
+            });
+            if (!res.ok) {
+              const text = await res.text().catch(() => "");
+              await supabase.from("crawl_logs").insert({
+                crawl_job_id: jobId, level: "error",
+                message: `Scrape failed for ${c.domain}: ${res.status} ${text.slice(0, 200)}`,
+              });
+            }
+          } catch (e: any) {
+            await supabase.from("crawl_logs").insert({
+              crawl_job_id: jobId, level: "error",
+              message: `Scrape threw for ${c.domain}: ${e?.message ?? e}`,
+            });
+          }
+          scraped++;
+          if (scraped % 2 === 0 || scraped === todo.length) await refreshCounters();
+        }, CONCURRENCY);
+
+        await refreshCounters();
+        const { data: final } = await supabase.from("crawl_jobs").select("status").eq("id", jobId).maybeSingle();
+        if (final?.status === "running") {
+          await supabase.from("crawl_jobs").update({ status: "completed", progress: 100 }).eq("id", jobId);
+          await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level: "success", message: `Scrape complete: ${scraped} companies processed.` });
         }
       } catch (e: any) {
         await supabase.from("crawl_logs").insert({
           crawl_job_id: jobId, level: "error",
-          message: `Scrape threw for ${c.domain}: ${e?.message ?? e}`,
+          message: `Batch worker crashed: ${e?.message ?? e}`,
         });
       }
-      scraped++;
-      if (scraped % 2 === 0 || scraped === todo.length) await refreshCounters();
-    }, CONCURRENCY);
+    })();
 
-    await refreshCounters();
-    // Mark complete only if still running (user may have paused/stopped)
-    const { data: final } = await supabase.from("crawl_jobs").select("status").eq("id", jobId).maybeSingle();
-    if (final?.status === "running") {
-      await supabase.from("crawl_jobs").update({ status: "completed", progress: 100 }).eq("id", jobId);
-      await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level: "success", message: `Scrape complete: ${scraped} companies processed.` });
+    // @ts-ignore - EdgeRuntime is provided by Supabase Edge runtime
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(work);
     }
 
-    return new Response(JSON.stringify({ scraped, total: todo.length }), {
-      status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ queued: todo.length, jobId }), {
+      status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
