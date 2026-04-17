@@ -101,7 +101,7 @@ async function tick(jobId: string) {
       });
       if (!error) { contactsDelta++; await api.addLog(jobId, "success", `Extracted public phone number`); }
     } else if (job.collectContactForms) {
-      const formUrl = `https://www.${target.domain}/contact-us`;
+      const formUrl = `https://www.${target.domain}/${pick(CONTACT_PATHS)}`;
       const { error } = await supabase.from("contacts").insert({
         company_id: target.id, crawl_job_id: jobId, contact_type: "contact_form",
         value: formUrl, source_url: url,
