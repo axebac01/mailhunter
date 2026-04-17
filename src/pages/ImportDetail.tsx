@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, FileText, Filter, Search, Briefcase } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, FileText, Filter, Search, Briefcase, Plus, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type ImportStatus } from "@/lib/api";
 import { exportImportResults } from "@/lib/exporters";
@@ -91,6 +91,49 @@ export default function ImportDetail() {
     toast.success(`Exported ${name}`);
   };
 
+  const matchedRows = useMemo(
+    () => allRows.filter((r) => r.matchedCompanyId && (r.status === "matched" || r.status === "duplicate")),
+    [allRows]
+  );
+
+  const createJobMut = useMutation({
+    mutationFn: async () => {
+      if (!importQ.data) throw new Error("Import not loaded");
+      if (matchedRows.length === 0) throw new Error("No matched companies to seed a job");
+      const mode = (arr: (string | null)[]): string | null => {
+        const counts = new Map<string, number>();
+        for (const v of arr) {
+          if (!v) continue;
+          counts.set(v, (counts.get(v) ?? 0) + 1);
+        }
+        let best: string | null = null;
+        let bestN = 0;
+        counts.forEach((n, k) => {
+          if (n > bestN) { bestN = n; best = k; }
+        });
+        return best;
+      };
+      const job = await api.createJob({
+        name: `Crawl: ${importQ.data.fileName}`,
+        country: mode(matchedRows.map((m) => m.country)),
+        industry: mode(matchedRows.map((m) => m.industry)),
+        max_companies: Math.min(matchedRows.length, 1000),
+        status: "draft",
+        source_type: "uploaded",
+      });
+      await api.updateImport(importQ.data.id, { crawl_job_id: job.id });
+      return job;
+    },
+    onSuccess: (job) => {
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      qc.invalidateQueries({ queryKey: ["import", id] });
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+      toast.success(`Created job from ${matchedRows.length} matched companies`);
+      navigate(`/jobs/${job.id}`);
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Failed to create job"),
+  });
+
   if (importQ.isLoading) {
     return <div className="p-6 max-w-[1600px] mx-auto"><p className="text-sm text-muted-foreground">Loading…</p></div>;
   }
@@ -124,6 +167,16 @@ export default function ImportDetail() {
                 <Link to={`/jobs/${imp.crawlJobId}`}><Briefcase className="h-4 w-4" /> View job</Link>
               </Button>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={matchedRows.length === 0 || createJobMut.isPending}
+              title={matchedRows.length === 0 ? "No matched companies to seed a job" : undefined}
+              onClick={() => createJobMut.mutate()}
+            >
+              {createJobMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {imp.crawlJobId ? "Recreate job" : "Create job from matched"} ({matchedRows.length})
+            </Button>
             <ExportButton selectedCount={selected.size} onExport={handleExport} />
           </div>
         }
