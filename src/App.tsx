@@ -11,6 +11,7 @@ import Jobs from "./pages/Jobs";
 import JobDetail from "./pages/JobDetail";
 import CreateJob from "./pages/CreateJob";
 import Imports from "./pages/Imports";
+import ImportDetail from "./pages/ImportDetail";
 import Contacts from "./pages/Contacts";
 import People from "./pages/People";
 import Companies from "./pages/Companies";
