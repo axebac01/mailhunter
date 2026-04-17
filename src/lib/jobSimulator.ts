@@ -57,11 +57,17 @@ async function tick(jobId: string) {
   const target = companies[Math.floor(Math.random() * companies.length)] as any;
 
   const pageType = pick(PAGE_TYPES);
-  const url = `https://www.${target.domain}/${pageType === "homepage" ? "" : pageType}`;
+  const urlPath = pageType === "homepage"
+    ? ""
+    : pageType === "contact"
+      ? pick(CONTACT_PAGE_PATHS)
+      : pageType;
+  const url = `https://www.${target.domain}/${urlPath}`;
+  const logPath = pageType === "homepage" ? "homepage" : `/${urlPath}`;
 
   // Always: log + source_page
   await Promise.all([
-    api.addLog(jobId, "info", `Crawled ${pageType} page on ${target.domain}`),
+    api.addLog(jobId, "info", `Crawled ${logPath} page on ${target.domain}`),
     supabase.from("source_pages").insert({
       company_id: target.id, crawl_job_id: jobId, url, page_type: pageType, status_code: 200,
       extracted_summary: `Public ${pageType} page; extracted allowed contact data.`,
