@@ -33,13 +33,6 @@ export default function Imports() {
   const [opts, setOpts] = useState({ ignoreDuplicates: true, overwriteEmpty: false, autoStart: false, attachJob: "none" });
   const [progress, setProgress] = useState<{ p: number; t: number } | null>(null);
 
-  const [detailId, setDetailId] = useState<string | null>(null);
-  const detailRows = useQuery({
-    queryKey: ["importRows", detailId],
-    queryFn: () => api.listImportRows(detailId!),
-    enabled: !!detailId,
-  });
-
   const handleFile = async (f: File) => {
     setFile(f);
     try {
