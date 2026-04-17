@@ -211,6 +211,7 @@ export type Database = {
           include_contact_person_roles: boolean
           include_departments: boolean
           include_generic_emails: boolean
+          include_person_emails: boolean
           include_phones: boolean
           industry: string | null
           last_run_at: string | null
@@ -239,6 +240,7 @@ export type Database = {
           include_contact_person_roles?: boolean
           include_departments?: boolean
           include_generic_emails?: boolean
+          include_person_emails?: boolean
           include_phones?: boolean
           industry?: string | null
           last_run_at?: string | null
@@ -267,6 +269,7 @@ export type Database = {
           include_contact_person_roles?: boolean
           include_departments?: boolean
           include_generic_emails?: boolean
+          include_person_emails?: boolean
           include_phones?: boolean
           industry?: string | null
           last_run_at?: string | null
@@ -519,7 +522,7 @@ export type Database = {
       clear_all_data: { Args: never; Returns: undefined }
     }
     Enums: {
-      contact_type: "generic_email" | "phone" | "contact_form"
+      contact_type: "generic_email" | "phone" | "contact_form" | "person_email"
       crawl_log_level: "info" | "warn" | "error" | "success"
       export_type: "contacts" | "people" | "job_results" | "import_results"
       file_format: "csv" | "xlsx"
@@ -670,7 +673,7 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
-      contact_type: ["generic_email", "phone", "contact_form"],
+      contact_type: ["generic_email", "phone", "contact_form", "person_email"],
       crawl_log_level: ["info", "warn", "error", "success"],
       export_type: ["contacts", "people", "job_results", "import_results"],
       file_format: ["csv", "xlsx"],
