@@ -140,6 +140,11 @@ export default function JobDetail() {
             <Button variant="outline" size="sm" onClick={() => updateStatus.mutate("paused")}><Pause className="h-4 w-4" /> Pause</Button>
             <Button variant="outline" size="sm" onClick={() => updateStatus.mutate("stopped")}><Square className="h-4 w-4" /> Stop</Button>
             <Button variant="outline" size="sm" onClick={() => dup.mutate()}><Copy className="h-4 w-4" /> Duplicate</Button>
+            {j.sourceType === "uploaded" && (
+              <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate()} disabled={resolveDomains.isPending}>
+                <Search className="h-4 w-4" /> {resolveDomains.isPending ? "Resolving…" : "Resolve domains"}
+              </Button>
+            )}
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
