@@ -27,7 +27,17 @@ function isPersonEmail(email: string): boolean {
   if (GENERIC_PREFIXES.has(head)) return false;
   return true;
 }
-const PHONE_RE = /\+?\d[\d\s().-]{7,}\d/g;
+// Phones: require + prefix OR tel: link context. Plain digit runs in arbitrary
+// HTML/SVG cause too many false positives (path coordinates, ids, etc.).
+const PHONE_INTL_RE = /\+\d[\d\s().-]{6,}\d/g;
+const TEL_HREF_RE = /href\s*=\s*["']tel:([^"']+)["']/gi;
+// Strip script/style/svg blocks before scanning to avoid SVG path noise.
+function stripNoise(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ");
+}
 
 const JUNK_DOMAINS = ["example.com","sentry.io","wixpress.com","wix.com","squarespace.com","godaddy.com","cloudflare.com","gstatic.com","sentry-next.wixpress.com","yourdomain.com","domain.com","email.com"];
 
