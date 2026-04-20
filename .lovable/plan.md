@@ -1,114 +1,57 @@
 
+
+## Problem
+
+You uploaded a 495-row file on `/jobs/new`, then created the job. All 495 companies are stuck at `domain_status = 'unresolved'`, the scrape ran and logged "0 companies with resolved domains", and 0 contacts were found.
+
+Two distinct bugs are causing this:
+
+### Bug 1 — Domain resolution never runs for companies created during the Create Job upload
+
+`runImport` fires `resolve-domains-batch` only at the moment the file is uploaded. On the Create Job page, the import is created with `crawl_job_id = null`, the job is built afterwards, and nothing ever re-triggers resolution. Even if the batch call did succeed, its log lines wouldn't show up under your job because no `jobId` was passed.
+
+### Bug 2 — `resolve-domains-batch` likely crashed at boot
+
+The function imports `corsHeaders` from `https://esm.sh/@supabase/supabase-js@2.95.0/cors`, which is not a real export of supabase-js. That throws on boot, so the invocation from `runImport` silently failed. Confirmed: there are zero info/result logs from that function for any recent job, only boot/shutdown.
+
 ## Fix
 
-Make the "From an import file" section on `/jobs/new` support uploading a file directly from any folder on the computer, instead of only selecting a previously created import.
-
-## Why this is happening
-
-The earlier fix was applied to `src/pages/Imports.tsx`, but the user is currently on `src/pages/CreateJob.tsx`. On that page, "From an import file" only renders an import dropdown:
-
-```text
-Create job
-└─ Source
-   ├─ Industry + country
-   └─ From an import file
-      └─ Select existing import only
+### 1. Fix `resolve-domains-batch` boot crash
+Replace the bad import with a local `corsHeaders` constant (standard pattern used in your other edge functions):
+```ts
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 ```
 
-So there is currently no folder/file picker there at all.
+### 2. Trigger domain resolution when the job is created from an uploaded import
+In `src/pages/CreateJob.tsx`, after `api.updateImport(importId, { crawl_job_id: job.id })`, invoke `resolve-domains-batch` with `{ importId, jobId: job.id }`. This:
+- runs server-side so the user can leave the page
+- attaches logs to the job (you'll see "Resolving domains for N companies…")
+- resolves all unresolved companies for that import
 
-## What to build
+Fire-and-forget (don't block job creation).
 
-### 1) Add direct file upload to the Create Job flow
-Update `src/pages/CreateJob.tsx` so the "From an import file" area includes:
+### 3. Add a "Resolve domains now" action on Job Detail
+For jobs already in this stuck state (like the current one), add a button on `/jobs/:id` that calls `resolve-domains-batch` with `{ jobId }`. The function already supports filtering unresolved companies via `jobId` → its imports → import_rows. This lets you recover the current 495-company job without re-uploading.
 
-- a button/dropzone to browse files from any folder
-- the same file-type handling as the Imports page
-- support for `.csv`, `.xls`, `.xlsx`
-- extension validation in code, not via a restrictive `accept` filter
+### 4. Auto-trigger resolution before scrape if needed (defensive)
+In the scrape pipeline, if it sees "0 companies with resolved domains" but unresolved ones exist for the job, log a clear message telling the user to click "Resolve domains" instead of silently doing nothing. (Optional — keep scope small if you prefer.)
 
-### 2) Allow both existing and new import sources
-Keep the current "select an existing import" dropdown, but add a second path for "upload a new file now".
+## Files to change
 
-Recommended UX:
+- `supabase/functions/resolve-domains-batch/index.ts` — fix `corsHeaders` import
+- `src/pages/CreateJob.tsx` — invoke `resolve-domains-batch` after job creation when `sourceMode === "uploaded"`
+- `src/pages/JobDetail.tsx` — add "Resolve domains" button, calls the function with `{ jobId }`
 
-```text
-From an import file
-[ Upload new file ]   [ Or choose existing import ▼ ]
-```
+## Recovery for the current job
 
-This lets users either:
-- upload directly from their computer, or
-- reuse a previously imported file
-
-### 3) Reuse the existing import pipeline
-Use the existing import logic already in:
-- `src/lib/importPipeline.ts`
-- `src/lib/api.ts`
-
-The new Create Job upload flow should:
-- parse the selected file
-- show mapping UI
-- run the import
-- refresh the imports query
-- automatically select the newly created import
-- continue with the normal uploaded-job creation flow
-
-### 4) Preserve the folder-browsing fix here too
-The file input used from Create Job must also avoid the restrictive picker behavior:
-- no `accept=".csv,.xls,.xlsx"` filter
-- validate selected filename in JavaScript with the same regex already used on the Imports page
-- show the same unsupported-file toast if the user picks a non-supported file
-
-### 5) Auto-fill job details after import
-After a successful inline import:
-- auto-select that import in the dropdown
-- recompute matched rows
-- keep the existing auto-fill behavior for job name, industry, country, and max companies
-
-## Recommended implementation shape
-
-### Option A: best long-term
-Extract the upload/parse/mapping/import UI from `src/pages/Imports.tsx` into a reusable component, then use it in:
-- `src/pages/Imports.tsx`
-- `src/pages/CreateJob.tsx`
-
-This avoids maintaining two different import experiences.
-
-### Option B: smaller change
-Duplicate only the minimal upload + mapping + run-import flow inside `CreateJob.tsx`, while still reusing:
-- `parseFile`
-- `autoMap`
-- `runImport`
-
-Option A is preferred if the shared UI can be cleanly extracted without large scope creep.
-
-## Files to update
-
-- `src/pages/CreateJob.tsx`
-  - add inline upload UI under "From an import file"
-  - support direct file browsing from any folder
-  - run import and auto-select the result
-- `src/pages/Imports.tsx`
-  - optionally refactor to use a shared upload component if extraction is chosen
-- `src/lib/importPipeline.ts`
-  - no logic change expected, only reuse
-- `src/lib/api.ts`
-  - likely no schema/API changes needed
-
-## Technical details
-
-- Keep validation client-side with:
-  - `/\.(csv|xls|xlsx)$/i`
-- Do not add backend or database changes
-- Do not change parsing/matching rules unless needed for reuse
-- Invalidate/import-refresh queries after inline upload so the dropdown updates immediately
-- Ensure Create Job still works when the user chooses an already existing import instead of uploading a new one
+After deploying, click the new "Resolve domains" button on `/jobs/5f6d2017…`. It will resolve all 495 companies in the background (concurrency 5, ~1–2 min), then you can re-run the scrape.
 
 ## Success criteria
 
-- On `/jobs/new`, when "From an import file" is selected, the user can open a file picker and browse any folder on their computer
-- Selecting a CSV/XLS/XLSX starts the existing import workflow
-- Selecting a `.txt` or other unsupported file shows the existing error toast
-- After import completes, the new import is selected automatically
-- The job can then be created from that imported file without leaving the page
+- New uploads → companies get domains resolved automatically and the job's logs show progress
+- Existing stuck jobs can be recovered with one click
+- Scrape no longer reports "0 companies with resolved domains" after resolution finishes
+
