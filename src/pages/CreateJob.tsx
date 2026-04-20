@@ -215,29 +215,63 @@ export default function CreateJob() {
           </div>
 
           {sourceMode === "uploaded" && (
-            <div className="mt-4 space-y-2">
-              <Label>Import file *</Label>
-              <Select value={importId} onValueChange={setImportId}>
-                <SelectTrigger><SelectValue placeholder={importsQ.isLoading ? "Loading…" : "Select an import"} /></SelectTrigger>
-                <SelectContent>
-                  {(importsQ.data ?? []).length === 0 ? (
-                    <div className="px-2 py-3 text-xs text-muted-foreground">No imports yet. Upload one from the Imports page.</div>
-                  ) : (
-                    importsQ.data!.map((imp) => (
-                      <SelectItem key={imp.id} value={imp.id}>
-                        {imp.fileName} · {imp.matchedRows} matched · {fmtRelative(imp.createdAt)}
-                      </SelectItem>
-                    ))
+            <div className="mt-4 space-y-3">
+              <div>
+                <Label>Upload a file from your computer</Label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleFile(f);
+                    e.target.value = "";
+                  }}
+                />
+                <div className="mt-1.5 flex items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadMut.isPending}
+                  >
+                    {uploadMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                    {uploadMut.isPending ? "Importing…" : "Upload new file"}
+                  </Button>
+                  {uploadProgress && (
+                    <span className="text-xs text-muted-foreground">
+                      {uploadProgress.p} / {uploadProgress.t} rows
+                    </span>
                   )}
-                </SelectContent>
-              </Select>
-              {importId && (
-                <p className="text-xs text-muted-foreground">
-                  {importRowsQ.isLoading
-                    ? "Loading rows…"
-                    : `${matchedRows.length} matched companies will seed this job.`}
-                </p>
-              )}
+                  <span className="text-xs text-muted-foreground">CSV, XLS or XLSX — browse any folder</span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Or choose an existing import</Label>
+                <Select value={importId} onValueChange={setImportId}>
+                  <SelectTrigger><SelectValue placeholder={importsQ.isLoading ? "Loading…" : "Select an import"} /></SelectTrigger>
+                  <SelectContent>
+                    {(importsQ.data ?? []).length === 0 ? (
+                      <div className="px-2 py-3 text-xs text-muted-foreground">No imports yet — upload a file above.</div>
+                    ) : (
+                      importsQ.data!.map((imp) => (
+                        <SelectItem key={imp.id} value={imp.id}>
+                          {imp.fileName} · {imp.matchedRows} matched · {fmtRelative(imp.createdAt)}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                {importId && (
+                  <p className="text-xs text-muted-foreground">
+                    {importRowsQ.isLoading
+                      ? "Loading rows…"
+                      : `${matchedRows.length} matched companies will seed this job.`}
+                  </p>
+                )}
+              </div>
             </div>
           )}
         </SectionCard>
