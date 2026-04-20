@@ -175,7 +175,7 @@ Deno.serve(async (req) => {
         company_id: companyId, crawl_job_id: jobId ?? null, url: pageUrl,
         page_type: /contact|kontakt/.test(pageUrl) ? "contact" : /about|om-/.test(pageUrl) ? "about" : /team|people/.test(pageUrl) ? "team" : "homepage",
         status_code: 200,
-        extracted_summary: `${emails.length} email candidates, ${phones.length} phone candidates`,
+        extracted_summary: `${emails.length} email candidates, ${phoneCandidates.length} phone candidates`,
       });
     }
 
