@@ -189,17 +189,7 @@ Deno.serve(async (req) => {
         if (!error) inserted.contacts++;
       }
     }
-    // Person emails
-    if (opt.personEmails) {
-      for (const e of foundEmails) {
-        if (!PERSONAL_RE.test(e)) continue;
-        const { error } = await supabase.from("contacts").insert({
-          company_id: companyId, crawl_job_id: jobId ?? null,
-          contact_type: "person_email", value: e, source_url: emailSources.get(e) ?? `https://${domain}`,
-        });
-        if (!error) inserted.contacts++;
-      }
-    }
+    // Phones (continued below)
     // Phones
     if (opt.phones) {
       for (const p of foundPhones) {
