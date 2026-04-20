@@ -170,10 +170,21 @@ Deno.serve(async (req) => {
     // Generic emails
     if (opt.genericEmails) {
       for (const e of foundEmails) {
-        if (PERSONAL_RE.test(e)) continue;
+        if (isPersonEmail(e)) continue;
         const { error } = await supabase.from("contacts").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
           contact_type: "generic_email", value: e, source_url: emailSources.get(e) ?? `https://${domain}`,
+        });
+        if (!error) inserted.contacts++;
+      }
+    }
+    // Person emails
+    if (opt.personEmails) {
+      for (const e of foundEmails) {
+        if (!isPersonEmail(e)) continue;
+        const { error } = await supabase.from("contacts").insert({
+          company_id: companyId, crawl_job_id: jobId ?? null,
+          contact_type: "person_email", value: e, source_url: emailSources.get(e) ?? `https://${domain}`,
         });
         if (!error) inserted.contacts++;
       }
