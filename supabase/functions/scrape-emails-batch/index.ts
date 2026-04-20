@@ -52,10 +52,18 @@ Deno.serve(async (req) => {
     const { data: rows } = await supabase.from("import_rows")
       .select("matched_company_id").in("import_id", importIds).not("matched_company_id", "is", null);
     const ids = Array.from(new Set((rows ?? []).map((r: any) => r.matched_company_id).filter(Boolean)));
-    const { data: companies } = await supabase.from("companies")
-      .select("id, name, domain").in("id", ids);
-    const todo = (companies ?? []).filter((c: any) => c.domain);
-    const skipped = (companies ?? []).length - todo.length;
+    // Batch the company fetch — Postgrest .in() with hundreds of UUIDs can exceed
+    // URL length limits and silently return zero rows.
+    const CHUNK = 100;
+    const allCompanies: any[] = [];
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const slice = ids.slice(i, i + CHUNK);
+      const { data: chunk } = await supabase.from("companies")
+        .select("id, name, domain").in("id", slice);
+      if (chunk) allCompanies.push(...chunk);
+    }
+    const todo = allCompanies.filter((c: any) => c.domain);
+    const skipped = allCompanies.length - todo.length;
 
     await supabase.from("crawl_logs").insert({
       crawl_job_id: jobId, level: "info",
