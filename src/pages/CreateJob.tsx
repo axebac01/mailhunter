@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { FileText, Globe2 } from "lucide-react";
+import { FileText, Globe2, Upload, Loader2 } from "lucide-react";
 import { api, type Weekday } from "@/lib/api";
+import { autoMap, parseFile, runImport } from "@/lib/importPipeline";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { Button } from "@/components/ui/button";
