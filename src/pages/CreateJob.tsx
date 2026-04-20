@@ -29,7 +29,7 @@ export default function CreateJob() {
     name: "", industry: "", country: "", maxCompanies: 100,
     weekdays: ["mon","tue","wed","thu","fri"] as Weekday[],
     startTime: "09:00", endTime: "18:00",
-    collectGenericEmails: true, collectPersonEmails: false, collectPhones: true, collectContactForms: true,
+    collectGenericEmails: true, collectPersonEmails: true, collectPhones: true, collectContactForms: true,
     collectPersonNames: true, collectPersonRoles: true, collectDepartments: false,
     deduplicate: true, notes: "",
   });
