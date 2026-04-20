@@ -1,45 +1,22 @@
 
 
-## Problem
+## Fix: allow browsing any folder/file in the import dialog
 
-The `industry_country` job simulator at `src/lib/jobSimulator.ts:81-85` queries **all companies with a domain**, ignoring the job's industry/country and any company's origin. Old companies left over from previous import files (e.g. "Lock Dent AB" → `cbp.gov`, "Bellevue Dentallab" → `bellevuedentallab.co.uk`) get reused as if they were freshly discovered for "Nytest Sverige" (Media / Sweden).
+### Problem
+On `/imports`, the file `<input>` uses `accept=".csv,.xls,.xlsx"`. On some OS file dialogs this filter hides non-matching files and can make folders appear empty or harder to navigate. We'll relax the picker so you can browse anywhere on your computer, then validate the extension after selection.
 
-## Fix
+### Changes
 
-Make the `industry_country` simulator generate **its own synthetic companies** scoped to the job's industry + country, and only seed/reuse companies that were created by the same crawl job.
-
-### Changes in `src/lib/jobSimulator.ts`
-
-1. **Track per-job synthetic companies**: query companies created by this `crawl_job_id` only (using a new `crawl_job_id` column on `companies`, or by tagging via `source_url` / `notes`). Simplest: add a `created_by_job_id uuid` column to `companies`.
-2. **When pool is below `maxCompanies`**: insert a new synthetic company with:
-   - Plausible name + domain seeded from job industry/country (e.g. `nordicmedia-ab.se`, `stockholmpress.se`)
-   - `country` = job.country, `industry` = job.industry
-   - `created_by_job_id` = jobId
-   - `domain_status = 'resolved'`
-3. **Pick targets only from this job's pool** — never touch unrelated companies.
-4. Increment `companies_found` exactly when a new synthetic company is inserted (not randomly).
-
-### Migration
-
-```sql
-ALTER TABLE public.companies
-  ADD COLUMN created_by_job_id uuid;
-CREATE INDEX idx_companies_created_by_job_id
-  ON public.companies(created_by_job_id);
-```
-
-### Cleanup option (offered, not automatic)
-
-Provide a one-click "Clear demo companies for this job" button on Job Detail that deletes companies/contacts/people/source_pages where `crawl_job_id = jobId`. Won't touch real import data.
+**`src/pages/Imports.tsx`**
+- Remove the `accept` attribute from the hidden `<input type="file">` so the OS dialog shows all files and folders normally.
+- In `handleFile(f)`, validate the extension in code: accept `.csv`, `.xls`, `.xlsx` (case-insensitive). If the file doesn't match, show a toast (`"Unsupported file type — please choose a CSV, XLS, or XLSX file"`) and stop.
+- Keep the drop zone behavior identical (drag-and-drop already accepts anything; same validation will apply).
+- Update the helper text under the drop zone from "Supported columns…" to also mention "Any folder on your computer — pick a CSV, XLS, or XLSX file."
 
 ### Out of scope
-
-- Cleaning the existing "Nytest Sverige" data — user can use Settings → Clear contacts, or I can add the per-job clear button above.
-- Changing `uploaded` job behavior (already correct — uses `import_rows.matched_company_id`).
+- No backend or schema changes.
+- No change to parsing logic in `src/lib/importPipeline.ts`.
 
 ### Files
-
-- `supabase/migrations/<new>` — add `companies.created_by_job_id`
-- `src/lib/jobSimulator.ts` — generate per-job synthetic companies; never touch unrelated rows
-- `src/pages/JobDetail.tsx` — optional "Clear this job's demo data" action
+- `src/pages/Imports.tsx`
 
