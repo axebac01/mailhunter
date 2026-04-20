@@ -75,7 +75,7 @@ export default function Contacts() {
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
         title="Contacts"
-        description="Public company contact records only — generic emails, phone numbers, and contact form URLs."
+        description="Public contact records only — generic emails, personal emails, phone numbers, and contact form URLs."
         actions={<ExportButton selectedCount={selected.size} onExport={handleExport} />}
       />
 
