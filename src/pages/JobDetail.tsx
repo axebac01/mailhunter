@@ -148,14 +148,14 @@ export default function JobDetail() {
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
-                  <Trash2 className="h-4 w-4" /> Clear contacts
+                  <Trash2 className="h-4 w-4" /> Clear this job's data
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Clear all contacts for this job?</AlertDialogTitle>
+                  <AlertDialogTitle>Clear all data for this job?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This will permanently delete all contacts, people, and crawled source pages collected for this job, and reset its counters to zero. Activity logs are kept. This cannot be undone.
+                    This will permanently delete all contacts, people, crawled source pages, and synthetic demo companies generated for this job, and reset its counters to zero. Activity logs are kept. This cannot be undone.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
