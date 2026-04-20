@@ -206,10 +206,25 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Only process companies still without a domain
-    const { data: companies } = await supabase.from("companies")
-      .select("id, name, country, domain").in("id", ids);
-    const todo = (companies ?? []).filter((c: any) => !c.domain);
+    // Only process companies still without a domain. Batch the fetch in chunks
+    // because Postgrest .in() with hundreds of UUIDs can exceed URL length limits
+    // and silently return zero rows.
+    const CHUNK = 100;
+    const allCompanies: any[] = [];
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const slice = ids.slice(i, i + CHUNK);
+      const { data: chunk, error } = await supabase.from("companies")
+        .select("id, name, country, domain").in("id", slice);
+      if (error) {
+        if (jobId) await supabase.from("crawl_logs").insert({
+          crawl_job_id: jobId, level: "error",
+          message: `Failed to load companies chunk ${i}-${i + slice.length}: ${error.message}`,
+        });
+        continue;
+      }
+      if (chunk) allCompanies.push(...chunk);
+    }
+    const todo = allCompanies.filter((c: any) => !c.domain);
 
     if (jobId) await supabase.from("crawl_logs").insert({
       crawl_job_id: jobId, level: "info",
