@@ -1,8 +1,12 @@
 // Batch domain resolution: takes { companyIds: [] } (or { importId } / { jobId }),
 // resolves them in parallel with bounded concurrency, and updates companies in place.
 // Runs server-side so the user can close the tab.
-import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
 const FIRECRAWL_V2 = "https://api.firecrawl.dev/v2";
 const CONCURRENCY = 5;
