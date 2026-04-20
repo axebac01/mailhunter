@@ -18,6 +18,7 @@ export type Database = {
         Row: {
           country: string | null
           created_at: string
+          created_by_job_id: string | null
           domain: string | null
           domain_status: string
           id: string
@@ -31,6 +32,7 @@ export type Database = {
         Insert: {
           country?: string | null
           created_at?: string
+          created_by_job_id?: string | null
           domain?: string | null
           domain_status?: string
           id?: string
@@ -44,6 +46,7 @@ export type Database = {
         Update: {
           country?: string | null
           created_at?: string
+          created_by_job_id?: string | null
           domain?: string | null
           domain_status?: string
           id?: string
