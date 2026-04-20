@@ -1,59 +1,45 @@
 
 
-## Improvements to the domain → email pipeline
+## Problem
 
-The current pipeline works but has several real weaknesses I'd recommend tightening. Grouped by impact.
+The `industry_country` job simulator at `src/lib/jobSimulator.ts:81-85` queries **all companies with a domain**, ignoring the job's industry/country and any company's origin. Old companies left over from previous import files (e.g. "Lock Dent AB" → `cbp.gov`, "Bellevue Dentallab" → `bellevuedentallab.co.uk`) get reused as if they were freshly discovered for "Nytest Sverige" (Media / Sweden).
 
-### High impact
+## Fix
 
-1. **Resolve domains in parallel during import** — today `runImport` awaits `tryResolveDomain` for every name-only row sequentially. A 200-row file = 200 sequential Firecrawl Search calls (~5–10 minutes). Switch to a small concurrency pool (e.g. 5 in flight) per import.
+Make the `industry_country` simulator generate **its own synthetic companies** scoped to the job's industry + country, and only seed/reuse companies that were created by the same crawl job.
 
-2. **Move domain resolution server-side in batches** — a new `resolve-domains-batch` edge function that takes `{ companyIds: [] }` and resolves them with proper concurrency, retries, and a single auth context. The browser tab can be closed without halting work.
+### Changes in `src/lib/jobSimulator.ts`
 
-3. **Scrape one company at a time → too slow for big jobs.** `jobSimulator.tick()` runs every 6s and scrapes one company per tick. For 100 companies that's 10 minutes of wall time on a tab that has to stay open. Replace with a `scrape-emails-batch` edge function invoked once when the job starts; it loops through resolved companies with concurrency 3–5 and updates job counters itself. The simulator becomes just a polling/refresh loop.
+1. **Track per-job synthetic companies**: query companies created by this `crawl_job_id` only (using a new `crawl_job_id` column on `companies`, or by tagging via `source_url` / `notes`). Simplest: add a `created_by_job_id uuid` column to `companies`.
+2. **When pool is below `maxCompanies`**: insert a new synthetic company with:
+   - Plausible name + domain seeded from job industry/country (e.g. `nordicmedia-ab.se`, `stockholmpress.se`)
+   - `country` = job.country, `industry` = job.industry
+   - `created_by_job_id` = jobId
+   - `domain_status = 'resolved'`
+3. **Pick targets only from this job's pool** — never touch unrelated companies.
+4. Increment `companies_found` exactly when a new synthetic company is inserted (not randomly).
 
-4. **Better domain confidence scoring** — current heuristic in `resolve-domain` just counts token matches. Improvements:
-   - Verify the candidate by fetching its homepage and checking that the company name actually appears in `<title>` / og tags.
-   - Penalize when the TLD doesn't match the country (e.g. Swedish company → prefer `.se`).
-   - Reject when the only match is in a path/subdomain of a generic host.
+### Migration
 
-### Medium impact
+```sql
+ALTER TABLE public.companies
+  ADD COLUMN created_by_job_id uuid;
+CREATE INDEX idx_companies_created_by_job_id
+  ON public.companies(created_by_job_id);
+```
 
-5. **Add a "Resolve domains" button on Job Detail** — manually trigger re-resolution for `unresolved`/`failed` companies in the linked imports without re-importing.
+### Cleanup option (offered, not automatic)
 
-6. **Persist `not_found` as a contact row** (or a dedicated `company_status`) so the UI shows "No public emails found" per company instead of just "0 contacts". Currently this only goes to the log.
-
-7. **Smarter contact-page discovery** — `firecrawlMap` returns up to 50 links and we keep at most 6 matched + homepage. Add `/imprint`, `/legal`, `/press`, `/karriere`, `/jobs`, `/staff`, `/leadership`. For German/Nordic sites the impressum is usually the gold mine.
-
-8. **Decode obfuscated emails** — many sites write `info [at] example [dot] com` or hex-encoded mailto. Add a normalization pass before the regex.
-
-9. **Cache Firecrawl results** — store `last_scraped_at` on `companies` and skip re-scraping within e.g. 7 days unless the user clicks "Re-scrape".
-
-### Low impact / polish
-
-10. **Phone normalization** — current regex returns raw strings like `+46 8 506 100 00`; normalize to E.164 and dedupe.
-11. **Replace the `tab-must-stay-open` simulator** for uploaded jobs with realtime subscriptions on `crawl_jobs` so the UI just reflects server progress.
-12. **Surface Firecrawl errors clearly** — 402 (insufficient credits) should show a banner with the top-up CTA, not silently log "Scrape failed".
-
-### Recommended scope for this round
-
-The biggest user-visible wins are **#1, #2, #3, #5**. Suggested deliverables:
-
-- New edge function `resolve-domains-batch` (concurrency 5, retries 1).
-- New edge function `scrape-emails-batch` (concurrency 3, updates `crawl_jobs` counters directly).
-- `JobDetail.tsx`: "Resolve domains" button + change Start to invoke `scrape-emails-batch` instead of the per-tick simulator path.
-- `jobSimulator.ts`: for `uploaded` jobs, stop driving scrapes from the client — just refresh queries while the server batch runs.
-- Keep `resolve-domain` and `scrape-emails` (single-company) as building blocks used by both batch functions and ad-hoc retries.
-
-### Files touched
-- `supabase/functions/resolve-domains-batch/index.ts` (new)
-- `supabase/functions/scrape-emails-batch/index.ts` (new)
-- `supabase/functions/resolve-domain/index.ts` (improve scoring + homepage verification)
-- `src/lib/jobSimulator.ts` (uploaded jobs → poll-only)
-- `src/lib/importPipeline.ts` (skip per-row resolve; enqueue a batch resolve at the end)
-- `src/pages/JobDetail.tsx` (Resolve domains button, hook Start to batch scrape)
+Provide a one-click "Clear demo companies for this job" button on Job Detail that deletes companies/contacts/people/source_pages where `crawl_job_id = jobId`. Won't touch real import data.
 
 ### Out of scope
-- Paid email finders (Hunter/Apollo), MX verification, obfuscation decoding (deferred to round 2).
-- Backfilling old fake `@null` rows (use existing Clear contacts).
+
+- Cleaning the existing "Nytest Sverige" data — user can use Settings → Clear contacts, or I can add the per-job clear button above.
+- Changing `uploaded` job behavior (already correct — uses `import_rows.matched_company_id`).
+
+### Files
+
+- `supabase/migrations/<new>` — add `companies.created_by_job_id`
+- `src/lib/jobSimulator.ts` — generate per-job synthetic companies; never touch unrelated rows
+- `src/pages/JobDetail.tsx` — optional "Clear this job's demo data" action
 
