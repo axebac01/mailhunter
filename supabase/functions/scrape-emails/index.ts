@@ -27,7 +27,17 @@ function isPersonEmail(email: string): boolean {
   if (GENERIC_PREFIXES.has(head)) return false;
   return true;
 }
-const PHONE_RE = /\+?\d[\d\s().-]{7,}\d/g;
+// Phones: require + prefix OR tel: link context. Plain digit runs in arbitrary
+// HTML/SVG cause too many false positives (path coordinates, ids, etc.).
+const PHONE_INTL_RE = /\+\d[\d\s().-]{6,}\d/g;
+const TEL_HREF_RE = /href\s*=\s*["']tel:([^"']+)["']/gi;
+// Strip script/style/svg blocks before scanning to avoid SVG path noise.
+function stripNoise(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ");
+}
 
 const JUNK_DOMAINS = ["example.com","sentry.io","wixpress.com","wix.com","squarespace.com","godaddy.com","cloudflare.com","gstatic.com","sentry-next.wixpress.com","yourdomain.com","domain.com","email.com"];
 
@@ -129,7 +139,8 @@ Deno.serve(async (req) => {
 
     for (const pageUrl of pages) {
       const { markdown, html } = await firecrawlScrape(pageUrl, apiKey);
-      const blob = `${markdown ?? ""}\n${html ?? ""}`;
+      const cleanHtml = stripNoise(html ?? "");
+      const blob = `${markdown ?? ""}\n${cleanHtml}`;
 
       // Emails
       const emails = blob.match(EMAIL_RE) ?? [];
@@ -144,11 +155,14 @@ Deno.serve(async (req) => {
         if (!emailSources.has(e)) emailSources.set(e, pageUrl);
       }
 
-      // Phones
-      const phones = blob.match(PHONE_RE) ?? [];
-      for (const raw of phones) {
+      // Phones — only intl-format or tel: links to avoid SVG/coord noise
+      const phoneCandidates: string[] = [];
+      for (const m of blob.matchAll(PHONE_INTL_RE)) phoneCandidates.push(m[0]);
+      for (const m of (html ?? "").matchAll(TEL_HREF_RE)) phoneCandidates.push(m[1]);
+      for (const raw of phoneCandidates) {
         const cleaned = raw.replace(/[^\d+]/g, "");
-        if (cleaned.length >= 8 && cleaned.length <= 16) foundPhones.add(raw.trim());
+        const digits = cleaned.replace(/\D/g, "");
+        if (digits.length >= 8 && digits.length <= 15) foundPhones.add(raw.trim());
       }
 
       // Contact form heuristic: page that looks like a contact page with a <form>
@@ -161,7 +175,7 @@ Deno.serve(async (req) => {
         company_id: companyId, crawl_job_id: jobId ?? null, url: pageUrl,
         page_type: /contact|kontakt/.test(pageUrl) ? "contact" : /about|om-/.test(pageUrl) ? "about" : /team|people/.test(pageUrl) ? "team" : "homepage",
         status_code: 200,
-        extracted_summary: `${emails.length} email candidates, ${phones.length} phone candidates`,
+        extracted_summary: `${emails.length} email candidates, ${phoneCandidates.length} phone candidates`,
       });
     }
 
