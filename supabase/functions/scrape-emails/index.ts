@@ -5,8 +5,28 @@ import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 
 const FIRECRAWL_V2 = "https://api.firecrawl.dev/v2";
-const PERSONAL_RE = /^[a-z]+[._-][a-z]+@/i;
+// Generic mailbox prefixes — everything else with a letter is treated as a person email.
+const GENERIC_PREFIXES = new Set([
+  "info","sales","contact","hello","support","office","admin","help","service","services",
+  "team","mail","email","press","media","marketing","pr","jobs","careers","career","hr",
+  "recruiting","recruitment","kontakt","kundtjanst","kundservice","post","booking","reception",
+  "noreply","no-reply","do-not-reply","donotreply","newsletter","billing","invoice","invoices",
+  "accounts","accounting","finance","legal","privacy","gdpr","dpo","security","abuse",
+  "webmaster","postmaster","hostmaster","enquiries","enquiry","inquiry","inquiries","general",
+  "welcome","feedback","orders","order","shop","store","customerservice","customer-service",
+]);
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+function isPersonEmail(email: string): boolean {
+  const local = email.split("@")[0]?.toLowerCase() ?? "";
+  if (!local || !/[a-z]/.test(local)) return false;
+  // strip +tag
+  const base = local.split("+")[0];
+  if (GENERIC_PREFIXES.has(base)) return false;
+  // role-style with separators where left side is generic (e.g. sales.uk@)
+  const head = base.split(/[._-]/)[0];
+  if (GENERIC_PREFIXES.has(head)) return false;
+  return true;
+}
 const PHONE_RE = /\+?\d[\d\s().-]{7,}\d/g;
 
 const JUNK_DOMAINS = ["example.com","sentry.io","wixpress.com","wix.com","squarespace.com","godaddy.com","cloudflare.com","gstatic.com","sentry-next.wixpress.com","yourdomain.com","domain.com","email.com"];
