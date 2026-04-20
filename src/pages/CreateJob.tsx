@@ -26,6 +26,44 @@ export default function CreateJob() {
   const qc = useQueryClient();
   const [sourceMode, setSourceMode] = useState<SourceMode>("industry_country");
   const [importId, setImportId] = useState<string>("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ p: number; t: number } | null>(null);
+
+  const uploadMut = useMutation({
+    mutationFn: async (f: File) => {
+      const parsed = await parseFile(f);
+      const mapping = autoMap(parsed.headers);
+      if (!Object.values(mapping).includes("company_name")) {
+        throw new Error("Could not detect a company name column. Use the Imports page to map columns manually.");
+      }
+      return runImport({
+        file: f,
+        parsed,
+        mapping,
+        options: { attachJobId: null, ignoreDuplicates: true, overwriteEmpty: false, autoStart: false },
+        onProgress: (p, t) => setUploadProgress({ p, t }),
+      });
+    },
+    onSuccess: async (newImportId) => {
+      await qc.invalidateQueries({ queryKey: ["imports"] });
+      setImportId(newImportId);
+      setUploadProgress(null);
+      toast.success("File imported");
+    },
+    onError: (e: any) => {
+      setUploadProgress(null);
+      toast.error(e?.message ?? "Import failed");
+    },
+  });
+
+  const handleFile = (f: File) => {
+    if (!/\.(csv|xls|xlsx)$/i.test(f.name)) {
+      toast.error("Unsupported file type — please choose a CSV, XLS, or XLSX file");
+      return;
+    }
+    uploadMut.mutate(f);
+  };
+
   const [form, setForm] = useState({
     name: "", industry: "", country: "", maxCompanies: 100,
     weekdays: ["mon","tue","wed","thu","fri"] as Weekday[],
