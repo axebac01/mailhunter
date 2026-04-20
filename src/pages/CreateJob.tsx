@@ -249,7 +249,7 @@ export default function CreateJob() {
           </div>
         </SectionCard>
 
-        <SectionCard title="Collection scope" description="Only public company-level data is collected. Personal email addresses are never stored.">
+        <SectionCard title="Collection scope" description="Only public contact data is collected. Personal emails are stored only when this option is enabled.">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {collectionOptions.map(([key, label, hint]) => (
               <label key={key} className="flex items-start gap-3 p-3 rounded-md border border-border hover:bg-muted/40 cursor-pointer">

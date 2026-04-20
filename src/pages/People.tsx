@@ -81,7 +81,7 @@ export default function People() {
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
         title="People"
-        description="Public people metadata only — names, roles, and departments. No personal email addresses are ever stored."
+        description="Public people metadata only — names, roles, and departments. Personal email addresses appear in Contacts, not here."
         actions={<ExportButton selectedCount={selected.size} onExport={handleExport} />}
       />
 
