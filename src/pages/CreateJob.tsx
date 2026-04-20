@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { FileText, Globe2 } from "lucide-react";
+import { FileText, Globe2, Upload, Loader2 } from "lucide-react";
 import { api, type Weekday } from "@/lib/api";
+import { autoMap, parseFile, runImport } from "@/lib/importPipeline";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,44 @@ export default function CreateJob() {
   const qc = useQueryClient();
   const [sourceMode, setSourceMode] = useState<SourceMode>("industry_country");
   const [importId, setImportId] = useState<string>("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ p: number; t: number } | null>(null);
+
+  const uploadMut = useMutation({
+    mutationFn: async (f: File) => {
+      const parsed = await parseFile(f);
+      const mapping = autoMap(parsed.headers);
+      if (!Object.values(mapping).includes("company_name")) {
+        throw new Error("Could not detect a company name column. Use the Imports page to map columns manually.");
+      }
+      return runImport({
+        file: f,
+        parsed,
+        mapping,
+        options: { attachJobId: null, ignoreDuplicates: true, overwriteEmpty: false, autoStart: false },
+        onProgress: (p, t) => setUploadProgress({ p, t }),
+      });
+    },
+    onSuccess: async (newImportId) => {
+      await qc.invalidateQueries({ queryKey: ["imports"] });
+      setImportId(newImportId);
+      setUploadProgress(null);
+      toast.success("File imported");
+    },
+    onError: (e: any) => {
+      setUploadProgress(null);
+      toast.error(e?.message ?? "Import failed");
+    },
+  });
+
+  const handleFile = (f: File) => {
+    if (!/\.(csv|xls|xlsx)$/i.test(f.name)) {
+      toast.error("Unsupported file type — please choose a CSV, XLS, or XLSX file");
+      return;
+    }
+    uploadMut.mutate(f);
+  };
+
   const [form, setForm] = useState({
     name: "", industry: "", country: "", maxCompanies: 100,
     weekdays: ["mon","tue","wed","thu","fri"] as Weekday[],
@@ -176,29 +215,63 @@ export default function CreateJob() {
           </div>
 
           {sourceMode === "uploaded" && (
-            <div className="mt-4 space-y-2">
-              <Label>Import file *</Label>
-              <Select value={importId} onValueChange={setImportId}>
-                <SelectTrigger><SelectValue placeholder={importsQ.isLoading ? "Loading…" : "Select an import"} /></SelectTrigger>
-                <SelectContent>
-                  {(importsQ.data ?? []).length === 0 ? (
-                    <div className="px-2 py-3 text-xs text-muted-foreground">No imports yet. Upload one from the Imports page.</div>
-                  ) : (
-                    importsQ.data!.map((imp) => (
-                      <SelectItem key={imp.id} value={imp.id}>
-                        {imp.fileName} · {imp.matchedRows} matched · {fmtRelative(imp.createdAt)}
-                      </SelectItem>
-                    ))
+            <div className="mt-4 space-y-3">
+              <div>
+                <Label>Upload a file from your computer</Label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleFile(f);
+                    e.target.value = "";
+                  }}
+                />
+                <div className="mt-1.5 flex items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadMut.isPending}
+                  >
+                    {uploadMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                    {uploadMut.isPending ? "Importing…" : "Upload new file"}
+                  </Button>
+                  {uploadProgress && (
+                    <span className="text-xs text-muted-foreground">
+                      {uploadProgress.p} / {uploadProgress.t} rows
+                    </span>
                   )}
-                </SelectContent>
-              </Select>
-              {importId && (
-                <p className="text-xs text-muted-foreground">
-                  {importRowsQ.isLoading
-                    ? "Loading rows…"
-                    : `${matchedRows.length} matched companies will seed this job.`}
-                </p>
-              )}
+                  <span className="text-xs text-muted-foreground">CSV, XLS or XLSX — browse any folder</span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Or choose an existing import</Label>
+                <Select value={importId} onValueChange={setImportId}>
+                  <SelectTrigger><SelectValue placeholder={importsQ.isLoading ? "Loading…" : "Select an import"} /></SelectTrigger>
+                  <SelectContent>
+                    {(importsQ.data ?? []).length === 0 ? (
+                      <div className="px-2 py-3 text-xs text-muted-foreground">No imports yet — upload a file above.</div>
+                    ) : (
+                      importsQ.data!.map((imp) => (
+                        <SelectItem key={imp.id} value={imp.id}>
+                          {imp.fileName} · {imp.matchedRows} matched · {fmtRelative(imp.createdAt)}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                {importId && (
+                  <p className="text-xs text-muted-foreground">
+                    {importRowsQ.isLoading
+                      ? "Loading rows…"
+                      : `${matchedRows.length} matched companies will seed this job.`}
+                  </p>
+                )}
+              </div>
             </div>
           )}
         </SectionCard>
