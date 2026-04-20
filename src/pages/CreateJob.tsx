@@ -149,6 +149,11 @@ export default function CreateJob() {
       });
       if (sourceMode === "uploaded" && importId) {
         await api.updateImport(importId, { crawl_job_id: job.id });
+        // Fire-and-forget: resolve domains for unresolved companies linked to this import.
+        const { supabase } = await import("@/integrations/supabase/client");
+        supabase.functions.invoke("resolve-domains-batch", {
+          body: { importId, jobId: job.id },
+        }).catch(() => {});
       }
       return job;
     },
