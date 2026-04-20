@@ -139,7 +139,8 @@ Deno.serve(async (req) => {
 
     for (const pageUrl of pages) {
       const { markdown, html } = await firecrawlScrape(pageUrl, apiKey);
-      const blob = `${markdown ?? ""}\n${html ?? ""}`;
+      const cleanHtml = stripNoise(html ?? "");
+      const blob = `${markdown ?? ""}\n${cleanHtml}`;
 
       // Emails
       const emails = blob.match(EMAIL_RE) ?? [];
@@ -154,11 +155,14 @@ Deno.serve(async (req) => {
         if (!emailSources.has(e)) emailSources.set(e, pageUrl);
       }
 
-      // Phones
-      const phones = blob.match(PHONE_RE) ?? [];
-      for (const raw of phones) {
+      // Phones — only intl-format or tel: links to avoid SVG/coord noise
+      const phoneCandidates: string[] = [];
+      for (const m of blob.matchAll(PHONE_INTL_RE)) phoneCandidates.push(m[0]);
+      for (const m of (html ?? "").matchAll(TEL_HREF_RE)) phoneCandidates.push(m[1]);
+      for (const raw of phoneCandidates) {
         const cleaned = raw.replace(/[^\d+]/g, "");
-        if (cleaned.length >= 8 && cleaned.length <= 16) foundPhones.add(raw.trim());
+        const digits = cleaned.replace(/\D/g, "");
+        if (digits.length >= 8 && digits.length <= 15) foundPhones.add(raw.trim());
       }
 
       // Contact form heuristic: page that looks like a contact page with a <form>
