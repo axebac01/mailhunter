@@ -34,6 +34,10 @@ export default function Imports() {
   const [progress, setProgress] = useState<{ p: number; t: number } | null>(null);
 
   const handleFile = async (f: File) => {
+    if (!/\.(csv|xls|xlsx)$/i.test(f.name)) {
+      toast.error("Unsupported file type — please choose a CSV, XLS, or XLSX file");
+      return;
+    }
     setFile(f);
     try {
       const p = await parseFile(f);
@@ -97,8 +101,8 @@ export default function Imports() {
             <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
             <p className="text-sm font-medium">Drop a CSV, XLS, or XLSX file here</p>
             <p className="text-xs text-muted-foreground mt-1">or click to browse</p>
-            <p className="text-xs text-muted-foreground mt-3">Supported columns: company_name (required), country, website, industry, notes</p>
-            <input ref={fileRef} type="file" hidden accept=".csv,.xls,.xlsx" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+            <p className="text-xs text-muted-foreground mt-3">Browse any folder on your computer — pick a CSV, XLS, or XLSX file. Supported columns: company_name (required), country, website, industry, notes</p>
+            <input ref={fileRef} type="file" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
           </div>
 
           {file && (
