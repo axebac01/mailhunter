@@ -34,6 +34,17 @@ export default function Jobs() {
   const [lastRunFrom, setLastRunFrom] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
+  useEffect(() => {
+    const channel = supabase
+      .channel("crawl_jobs_progress")
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "crawl_jobs" }, () => {
+        qc.invalidateQueries({ queryKey: ["jobs"] });
+        qc.invalidateQueries({ queryKey: ["kpis"] });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc]);
+
   const countries = useMemo(() => Array.from(new Set(jobs.map((j) => j.country).filter(Boolean) as string[])).sort(), [jobs]);
   const industries = useMemo(() => Array.from(new Set(jobs.map((j) => j.industry).filter(Boolean) as string[])).sort(), [jobs]);
 
