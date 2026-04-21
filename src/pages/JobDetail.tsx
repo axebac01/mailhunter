@@ -458,12 +458,25 @@ function JobTimeline({ jobId }: { jobId: string }) {
     return c;
   }, [rows]);
 
+  const resolverCount = useMemo(() => rows.filter((r) => r.event && RESOLVER_EVENTS.includes(r.event)).length, [rows]);
+
+  const deferred = useMemo(() => {
+    // rows are newest-first; find latest resolve_* event
+    for (const r of rows) {
+      if (r.event === "resolve_completed") return null;
+      if (r.event === "resolve_deferred") return r;
+      if (r.event === "resolve_started") return null;
+    }
+    return null;
+  }, [rows]);
+
   const chips: { key: FilterKey; label: string; n?: number }[] = [
     { key: "all", label: "All", n: rows.length },
     { key: "discovered", label: "Discovered" },
     { key: "crawled", label: "Crawled", n: counts.crawled },
     { key: "emails", label: "Emails", n: counts.emails },
     { key: "people", label: "People", n: counts.people },
+    { key: "resolver", label: "Resolver", n: resolverCount },
   ];
 
   return (
