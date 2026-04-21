@@ -603,6 +603,26 @@ function enqueueResolverWaves(ctx: PipelineCtx) {
 }
 
 // ============================================================================
+// Cancellation registry
+// ============================================================================
+
+const importControllers: Map<string, { cancelled: boolean }> = (globalThis as any).__importControllers ??= new Map();
+
+export function cancelImport(importId: string): void {
+  const c = importControllers.get(importId);
+  if (c) c.cancelled = true;
+  // Best-effort: mark the import row as failed immediately so UI reflects it.
+  api.updateImport(importId, {
+    status: "failed",
+  }).catch(() => {});
+  // Also annotate the most recent error_message-less stub via an empty row note? Skip — keep simple.
+}
+
+export function isImportCancelled(importId: string): boolean {
+  return !!importControllers.get(importId)?.cancelled;
+}
+
+// ============================================================================
 // Main entry
 // ============================================================================
 
