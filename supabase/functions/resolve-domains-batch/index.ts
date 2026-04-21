@@ -514,9 +514,11 @@ Deno.serve(async (req) => {
     const TIME_BUDGET_MS = 100_000; // leave headroom for the 150s wall
     const startedAt = Date.now();
 
+    const mode = reresolveAll ? "reresolve" : retryFailed ? "retry" : "initial";
     if (jobId) await supabase.from("crawl_logs").insert({
       crawl_job_id: jobId, level: "info",
       message: `${reresolveAll ? "Re-resolving ALL" : retryFailed ? "Retrying failed" : "Resolving"} domains for ${todo.length} companies (concurrency ${CONCURRENCY}${jobCountry ? `, country: ${jobCountry}` : ""})…`,
+      meta_json: { event: "resolve_started", total: todo.length, mode, country: jobCountry, concurrency: CONCURRENCY },
     });
 
     let resolved = 0, failed = 0, paymentErr = false;
