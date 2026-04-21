@@ -444,19 +444,33 @@ export default function JobDetail() {
       )}
 
       {pendingAction ? (
-        <div className={cn(
-          "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
-          pendingAction.kind === "pausing" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
-        )}>
-          <Loader2 className={cn("h-4 w-4 animate-spin", pendingAction.kind === "pausing" ? "text-warning" : "text-muted-foreground")} />
-          <span>
-            {(() => {
-              const remainingMs = Math.max(0, pendingAction.estimatedWaveMs - (Date.now() - pendingAction.startedAt));
-              const secs = Math.ceil(remainingMs / 1000);
-              const tail = remainingMs > 0 ? `current batch finishing (~${secs}s left)…` : "current batch finishing up…";
-              return pendingAction.kind === "pausing" ? `Pausing scraper — ${tail}` : `Stopping scraper — ${tail}`;
-            })()}
-          </span>
+        <div
+          role="status"
+          aria-live="polite"
+          className={cn(
+            "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
+            pendingAction.kind === "pausing" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
+          )}
+        >
+          {(() => {
+            const elapsed = Date.now() - pendingAction.startedAt;
+            const remainingMs = Math.max(0, pendingAction.estimatedWaveMs - elapsed);
+            const secs = Math.max(1, Math.ceil(remainingMs / 1000));
+            const progress = pendingAction.estimatedWaveMs > 0
+              ? Math.min(1, elapsed / pendingAction.estimatedWaveMs)
+              : 1;
+            const tail = remainingMs > 0 ? `current batch finishing (~${secs}s left)…` : "current batch finishing up…";
+            const lead = pendingAction.kind === "pausing" ? "Pausing scraper" : "Stopping scraper";
+            const tone = pendingAction.kind === "pausing" ? "text-warning" : "text-muted-foreground";
+            return (
+              <>
+                {remainingMs > 0
+                  ? <CountdownRing progress={progress} className={tone} />
+                  : <Loader2 className={cn("h-4 w-4 animate-spin", tone)} />}
+                <span className="tabular-nums">{`${lead} — ${tail}`}</span>
+              </>
+            );
+          })()}
         </div>
       ) : (j.status === "paused" || j.status === "stopped") && (
         <div className={cn(
