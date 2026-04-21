@@ -1,9 +1,9 @@
-// Resolve a company name (+ optional country) to a website domain via Firecrawl Search.
-// Uses cleaned query, ASCII-folded name variant, country/lang hints, fallback queries
-// and a looser homepage verifier.
+// Single-shot domain resolution — same upgrades as the batch version:
+// search + slug probes + map fallback + LLM tiebreaker + looser verification.
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 
 const FIRECRAWL_V2 = "https://api.firecrawl.dev/v2";
+const LOVABLE_AI_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
 const BLOCKED_HOSTS = new Set([
   "linkedin.com","facebook.com","instagram.com","twitter.com","x.com","youtube.com",
@@ -13,6 +13,7 @@ const BLOCKED_HOSTS = new Set([
   "pitchbook.com","zoominfo.com","rocketreach.co","apollo.io","owler.com",
   "dnb.com","companieshouse.gov.uk","allabolag.se","proff.se","bizzdb.com",
   "yellowpages.com","gulesider.no","krak.dk","fonecta.fi","hitta.se","eniro.se",
+  "merinfo.se","ratsit.se",
 ]);
 
 const COUNTRY_TLDS: Record<string, string[]> = {
@@ -23,7 +24,7 @@ const COUNTRY_TLDS: Record<string, string[]> = {
   germany: ["de"], deutschland: ["de"], de: ["de"],
   france: ["fr"], fr: ["fr"],
   netherlands: ["nl"], nederland: ["nl"], nl: ["nl"],
-  uk: ["uk","co.uk"], "united kingdom": ["uk","co.uk"], britain: ["uk","co.uk"],
+  uk: ["co.uk","uk"], "united kingdom": ["co.uk","uk"], britain: ["co.uk","uk"], gb: ["co.uk","uk"],
   ireland: ["ie"], ie: ["ie"],
   spain: ["es"], españa: ["es"], es: ["es"],
   italy: ["it"], italia: ["it"], it: ["it"],
@@ -32,24 +33,33 @@ const COUNTRY_TLDS: Record<string, string[]> = {
 const COUNTRY_HINTS: Record<string, { country: string; lang: string; contactWord: string; siteWord: string }> = {
   sweden:  { country: "se", lang: "sv", contactWord: "kontakt", siteWord: "hemsida" },
   sverige: { country: "se", lang: "sv", contactWord: "kontakt", siteWord: "hemsida" },
+  se:      { country: "se", lang: "sv", contactWord: "kontakt", siteWord: "hemsida" },
   norway:  { country: "no", lang: "no", contactWord: "kontakt", siteWord: "nettside" },
   norge:   { country: "no", lang: "no", contactWord: "kontakt", siteWord: "nettside" },
+  no:      { country: "no", lang: "no", contactWord: "kontakt", siteWord: "nettside" },
   denmark: { country: "dk", lang: "da", contactWord: "kontakt", siteWord: "hjemmeside" },
   danmark: { country: "dk", lang: "da", contactWord: "kontakt", siteWord: "hjemmeside" },
+  dk:      { country: "dk", lang: "da", contactWord: "kontakt", siteWord: "hjemmeside" },
   finland: { country: "fi", lang: "fi", contactWord: "yhteystiedot", siteWord: "kotisivu" },
   suomi:   { country: "fi", lang: "fi", contactWord: "yhteystiedot", siteWord: "kotisivu" },
+  fi:      { country: "fi", lang: "fi", contactWord: "yhteystiedot", siteWord: "kotisivu" },
   germany: { country: "de", lang: "de", contactWord: "kontakt", siteWord: "webseite" },
   deutschland: { country: "de", lang: "de", contactWord: "kontakt", siteWord: "webseite" },
+  de:      { country: "de", lang: "de", contactWord: "kontakt", siteWord: "webseite" },
   france:  { country: "fr", lang: "fr", contactWord: "contact", siteWord: "site" },
+  fr:      { country: "fr", lang: "fr", contactWord: "contact", siteWord: "site" },
   netherlands: { country: "nl", lang: "nl", contactWord: "contact", siteWord: "website" },
   nederland: { country: "nl", lang: "nl", contactWord: "contact", siteWord: "website" },
+  nl:      { country: "nl", lang: "nl", contactWord: "contact", siteWord: "website" },
   uk: { country: "gb", lang: "en", contactWord: "contact", siteWord: "website" },
   "united kingdom": { country: "gb", lang: "en", contactWord: "contact", siteWord: "website" },
   ireland: { country: "ie", lang: "en", contactWord: "contact", siteWord: "website" },
   spain:   { country: "es", lang: "es", contactWord: "contacto", siteWord: "sitio web" },
   españa:  { country: "es", lang: "es", contactWord: "contacto", siteWord: "sitio web" },
+  es:      { country: "es", lang: "es", contactWord: "contacto", siteWord: "sitio web" },
   italy:   { country: "it", lang: "it", contactWord: "contatti", siteWord: "sito web" },
   italia:  { country: "it", lang: "it", contactWord: "contatti", siteWord: "sito web" },
+  it:      { country: "it", lang: "it", contactWord: "contatti", siteWord: "sito web" },
 };
 
 const LEGAL_SUFFIXES_RE = /\b(ab|aktiebolag|oy|oyj|gmbh|mbh|ltd|limited|inc|incorporated|llc|l\.l\.c|sa|s\.a|spa|s\.p\.a|plc|bv|b\.v|as|a\/s|aps|a\.p\.s|sarl|s\.a\.r\.l|kg|ag|nv|n\.v|holding|holdings|group|the|co|corp|corporation|company)\b\.?/gi;
@@ -98,6 +108,15 @@ function scoreCandidate(host: string, nameTokens: string[], country?: string | n
   }
   return score;
 }
+function buildSlug(cleanName: string): { slug: string; hyphenated: string; acronym: string } {
+  const ascii = foldAscii(cleanName.toLowerCase()).replace(/[^a-z0-9\s-]/g, "");
+  const words = ascii.split(/\s+/).filter(Boolean);
+  return {
+    slug: words.join(""),
+    hyphenated: words.join("-"),
+    acronym: words.length >= 3 ? words.map((w) => w[0]).join("") : "",
+  };
+}
 
 async function searchFirecrawl(query: string, apiKey: string, hints?: { country?: string; lang?: string }): Promise<any[]> {
   const body: Record<string, unknown> = { query, limit: 10 };
@@ -108,11 +127,35 @@ async function searchFirecrawl(query: string, apiKey: string, hints?: { country?
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const json = await res.json();
-  if (!res.ok) {
-    return [];
-  }
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) return [];
   return Array.isArray(json?.data) ? json.data : Array.isArray(json?.data?.web) ? json.data.web : [];
+}
+
+async function mapFirecrawl(host: string, apiKey: string): Promise<string[]> {
+  try {
+    const res = await fetch(`${FIRECRAWL_V2}/map`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ url: `https://${host}`, limit: 50 }),
+    });
+    if (!res.ok) return [];
+    const j = await res.json().catch(() => ({}));
+    return Array.isArray(j?.links) ? j.links : Array.isArray(j?.data?.links) ? j.data.links : [];
+  } catch { return []; }
+}
+
+async function headProbe(host: string): Promise<boolean> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    let res = await fetch(`https://${host}`, { method: "HEAD", redirect: "follow", signal: ctrl.signal });
+    if (!res.ok || res.status >= 400) {
+      res = await fetch(`https://${host}`, { method: "GET", redirect: "follow", signal: ctrl.signal, headers: { Range: "bytes=0-0" } });
+    }
+    return res.ok || (res.status >= 200 && res.status < 400);
+  } catch { return false; }
+  finally { clearTimeout(timer); }
 }
 
 async function verifyHomepage(host: string, nameTokens: string[], apiKey: string): Promise<boolean> {
@@ -120,22 +163,23 @@ async function verifyHomepage(host: string, nameTokens: string[], apiKey: string
     const res = await fetch(`${FIRECRAWL_V2}/scrape`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ url: `https://${host}`, formats: ["html"], onlyMainContent: false }),
+      body: JSON.stringify({ url: `https://${host}`, formats: ["html","markdown"], onlyMainContent: false }),
     });
     if (!res.ok) return false;
     const j = await res.json();
-    const html: string = (j?.html ?? j?.data?.html ?? "").toLowerCase();
-    if (!html) return false;
+    const html: string = String(j?.html ?? j?.data?.html ?? "").toLowerCase();
+    const md: string = String(j?.markdown ?? j?.data?.markdown ?? "").toLowerCase();
+    if (!html && !md) return false;
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/);
     const ogMatch = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)/);
     const descMatch = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)/);
     const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/);
-    const haystack = foldAscii(`${titleMatch?.[1] ?? ""} ${ogMatch?.[1] ?? ""} ${descMatch?.[1] ?? ""} ${h1Match?.[1] ?? ""}`.toLowerCase());
+    const haystack = foldAscii(`${titleMatch?.[1] ?? ""} ${ogMatch?.[1] ?? ""} ${descMatch?.[1] ?? ""} ${h1Match?.[1] ?? ""} ${md}`.toLowerCase());
     return nameTokens.some((t) => haystack.includes(t));
   } catch { return false; }
 }
 
-type Cand = { host: string; url: string; score: number; title?: string };
+type Cand = { host: string; url: string; score: number; title?: string; snippet?: string; source: "search"|"slug"|"map" };
 
 function rankFromResults(results: any[], nameTokens: string[], country?: string | null): Cand[] {
   const seen = new Map<string, Cand>();
@@ -146,9 +190,35 @@ function rankFromResults(results: any[], nameTokens: string[], country?: string 
     const score = scoreCandidate(host, nameTokens, country);
     if (score < 0) continue;
     const prev = seen.get(host);
-    if (!prev || score > prev.score) seen.set(host, { host, url, score, title: r.title });
+    if (!prev || score > prev.score) seen.set(host, { host, url, score, title: r.title, snippet: r.description ?? r.snippet, source: "search" });
   }
   return Array.from(seen.values()).sort((a, b) => b.score - a.score);
+}
+
+async function llmTiebreaker(name: string, country: string | null, candidates: Cand[]): Promise<string | null> {
+  const apiKey = Deno.env.get("LOVABLE_API_KEY");
+  if (!apiKey) return null;
+  try {
+    const list = candidates.slice(0, 5).map((c, i) => `${i + 1}. ${c.host}${c.title ? ` — ${c.title}` : ""}${c.snippet ? ` — ${c.snippet.slice(0, 120)}` : ""}`).join("\n");
+    const prompt = `Company: ${name}${country ? ` (country: ${country})` : ""}
+Pick the most likely OFFICIAL company homepage from the list. Reply with ONLY the host (e.g. "example.se") or "none".
+
+${list}`;
+    const res = await fetch(LOVABLE_AI_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-lite",
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const text = String(j?.choices?.[0]?.message?.content ?? "").trim().toLowerCase().replace(/^["']|["']$/g, "");
+    if (!text || text === "none") return null;
+    const host = text.replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+    return candidates.find((c) => c.host === host)?.host ?? null;
+  } catch { return null; }
 }
 
 Deno.serve(async (req) => {
@@ -170,11 +240,14 @@ Deno.serve(async (req) => {
     const nameTokens = Array.from(new Set([...tokens(companyName), ...tokens(cleanName), ...tokens(cleanAscii)]));
     const hints = country ? COUNTRY_HINTS[String(country).toLowerCase().trim()] : undefined;
     const fcHints = hints ? { country: hints.country, lang: hints.lang } : undefined;
+    const tlds = country ? (COUNTRY_TLDS[String(country).toLowerCase().trim()] ?? []) : [];
+    const primaryTld = tlds[0];
 
     const queries: string[] = [];
     if (country) {
       queries.push(`"${cleanName}" ${country} ${hints?.contactWord ?? "contact"}`);
       queries.push(`${cleanName} ${country}`);
+      if (primaryTld) queries.push(`site:.${primaryTld} "${cleanName}"`);
     } else {
       queries.push(`"${cleanName}" official website`);
     }
@@ -183,24 +256,73 @@ Deno.serve(async (req) => {
     }
     queries.push(`${cleanName} ${hints?.siteWord ?? "website"}`);
 
-    let bestOverall: Cand | undefined;
+    let bestSearch: Cand | undefined;
     let lastRanked: Cand[] = [];
     for (const q of queries) {
       const results = await searchFirecrawl(q, apiKey, fcHints);
       const ranked = rankFromResults(results, nameTokens, country);
       if (ranked.length) lastRanked = ranked;
       const top = ranked[0];
-      if (top && (!bestOverall || top.score > bestOverall.score)) bestOverall = top;
-      if (bestOverall && bestOverall.score >= 5) break;
+      if (top && (!bestSearch || top.score > bestSearch.score)) bestSearch = top;
+      if (bestSearch && bestSearch.score >= 5) break;
     }
 
-    let best = bestOverall;
-    if (best && best.score < 4) {
+    // Slug probes
+    const slugCandidates: Cand[] = [];
+    const { slug, hyphenated, acronym } = buildSlug(cleanName);
+    const tldsToTry = Array.from(new Set([...tlds, "com"]));
+    const guesses: string[] = [];
+    for (const tld of tldsToTry) {
+      if (slug && slug.length >= 3) guesses.push(`${slug}.${tld}`);
+      if (hyphenated && hyphenated !== slug) guesses.push(`${hyphenated}.${tld}`);
+      if (acronym && acronym.length >= 3) guesses.push(`${acronym}.${tld}`);
+    }
+    const uniqGuesses = Array.from(new Set(guesses)).filter((h) => !isBlocked(h)).slice(0, 8);
+    const probes = await Promise.all(uniqGuesses.map(async (h) => ({ host: h, ok: await headProbe(h) })));
+    for (const { host, ok } of probes) {
+      if (!ok) continue;
+      const score = scoreCandidate(host, nameTokens, country);
+      if (score < 0) continue;
+      slugCandidates.push({ host, url: `https://${host}`, score, source: "slug" });
+    }
+
+    const merged = new Map<string, Cand>();
+    for (const c of [...lastRanked, ...slugCandidates]) {
+      const prev = merged.get(c.host);
+      if (!prev || c.score > prev.score) merged.set(c.host, c);
+    }
+    let allRanked = Array.from(merged.values()).sort((a, b) => b.score - a.score);
+    let best: Cand | undefined = allRanked[0];
+
+    if (best && best.source === "search" && best.score >= 3 && best.score <= 4) {
+      const mapped = await mapFirecrawl(best.host, apiKey);
+      for (const u of mapped.slice(0, 10)) {
+        const h = hostFromUrl(u);
+        if (!h) continue;
+        const score = scoreCandidate(h, nameTokens, country);
+        if (score > (merged.get(h)?.score ?? -1)) {
+          merged.set(h, { host: h, url: u, score, source: "map" });
+        }
+      }
+      allRanked = Array.from(merged.values()).sort((a, b) => b.score - a.score);
+      best = allRanked[0];
+    }
+
+    if (best) {
       const stem = hostStem(best.host);
       const exactStem = nameTokens.some((t) => stem === t);
-      if (!exactStem) {
+      const isCountrySlug = best.source === "slug" && primaryTld && tldOf(best.host) === primaryTld && exactStem;
+      if (!exactStem && !isCountrySlug && best.score < 4) {
         const ok = await verifyHomepage(best.host, nameTokens, apiKey);
         if (!ok && best.score < 2) best = undefined;
+      }
+    }
+
+    if (best && best.score < 5 && allRanked.length >= 2 && (allRanked[0].score - allRanked[1].score) <= 1) {
+      const pick = await llmTiebreaker(companyName, country ?? null, allRanked.slice(0, 5));
+      if (pick) {
+        const found = allRanked.find((c) => c.host === pick);
+        if (found) best = found;
       }
     }
 
@@ -215,7 +337,7 @@ Deno.serve(async (req) => {
       website: best ? `https://${best.host}` : null,
       confidence,
       evidenceUrl: best?.url ?? null,
-      candidates: lastRanked.slice(0, 5),
+      candidates: allRanked.slice(0, 5),
     }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
