@@ -2,52 +2,59 @@
 
 ## Goal
 
-While the JobDetail page is in the transient **Pausing…** / **Stopping…** state, show an estimated remaining time (e.g. *"~32s left"*) so users know roughly how long until the in-flight wave finishes and the worker actually exits.
+Polish the JobDetail Pause/Stop transition UX with small, high-impact refinements that make the feature feel production-grade.
 
-## Approach
+## Scope
 
-All changes local to `src/pages/JobDetail.tsx`. No backend changes — we derive the estimate from existing `crawl_logs` already polled.
+Read-only review of `src/pages/JobDetail.tsx` showed the countdown works but has a few rough edges worth tightening. All changes stay local to that file — no backend, no schema.
 
-### 1. Estimate "typical wave duration" from recent logs
+## Refinements
 
-The worker logs `"Finished <Company> in Ns"` after each company (visible in the network dump, e.g. *"Finished StenStures Måleri AB in 43s"*, *"Finished N Fredrikssons Fönsterrenovering AB in 22s"*). The `meta_json.duration_ms` field on those entries is the authoritative per-company time.
+### 1. Smoother countdown (no jitter)
 
-When `pendingAction` becomes set:
-- From the already-fetched `crawl_logs` list, pick the **last 5–10 entries** whose `meta_json.event === "company_finished"` and read `meta_json.duration_ms`.
-- Take the **max** of those (worst-case in-flight company), capped at 60s, floored at 5s. Default to 45s if no samples exist.
-- Store this as `estimatedWaveMs` alongside `pendingAction.startedAt`.
+- Replace the 1s `setInterval` with a `requestAnimationFrame` loop throttled to 250ms updates. This keeps the displayed seconds stable when the tab regains focus and avoids the "skip a second" effect when the interval drifts.
+- Use `Math.max(1, Math.ceil(...))` so the badge never flashes "0s left" before flipping to "finishing up…".
 
-### 2. Countdown badge
+### 2. Better wave-duration estimate
 
-Add a small badge next to the existing "Pausing…" / "Stopping…" pill:
-- Computed as `Math.max(0, estimatedWaveMs - (now - startedAt))`, rounded to seconds.
-- Updated via a `setInterval(1000)` that's only active while `pendingAction !== null`.
-- Display formats:
-  - `> 0s` → *"~Ns left"* (muted text, monospace numerals)
-  - `0s` reached but worker hasn't exited yet → *"finishing up…"* (no number, avoids "−5s left")
+Current code uses `max(last 10 durations)` which over-estimates if one slow company skewed history. Improve to:
+- Take the **p90** of the last 20 `company_finished` durations (more representative of worst-case in-flight).
+- Add a small buffer (+3s) for worker shutdown overhead.
+- Same 5s floor / 60s ceiling / 45s default.
 
-### 3. Update the transition banner copy
+### 3. Progress ring instead of static spinner
 
-Replace the static *"up to ~45 s"* phrasing in the banner with the dynamic estimate:
-- Pausing: *"Pausing scraper — current batch finishing (~Ns left)…"*
-- Stopping: *"Stopping scraper — current batch finishing (~Ns left)…"*
+- Replace the spinner in the transition pill with a tiny circular progress ring (SVG, 14px) that fills as the countdown elapses. Gives passive visual confirmation that time is actually moving even when the seconds number is steady.
+- Falls back to spinner once countdown hits 0 ("finishing up…").
 
-When the countdown reaches 0, fall back to *"current batch finishing up…"*.
+### 4. Persist intent across reloads
 
-### 4. Cleanup
+Currently if the user refreshes during a Pausing… transition, the pending state is lost and they see the bare "paused" banner with no context. Fix:
+- Persist `pendingAction` to `sessionStorage` keyed by job id on set, clear on resolve/timeout.
+- On mount, rehydrate if the stored `startedAt` is within the last 90s and job status matches the intent.
 
-- Clear the interval when `pendingAction` clears (worker exit detected) or on unmount.
-- No new queries, no new state besides `estimatedWaveMs` and a `tick` counter for re-render.
+### 5. Accessibility + polish
+
+- Add `role="status"` and `aria-live="polite"` to the transition banner so screen readers announce the state change.
+- Add `aria-label` with the full "Pausing, ~32 seconds left" text on the pill (the visual is abbreviated).
+- Use `tabular-nums` on the countdown number (already partially there) and ensure the pill width doesn't reflow as digits change — fixed min-width.
+
+### 6. Timeout copy improvement
+
+When the 60s safety timeout fires without seeing the exit log, current toast is generic. Improve to:
+- Auto-refetch the job + logs once before showing the toast (worker may have just exited).
+- If still no exit log, toast: *"Worker is taking longer than expected. The status is correct — refresh logs to confirm."* with a "Refresh logs" action button that invalidates the logs query.
 
 ## Files to change
 
-- `src/pages/JobDetail.tsx` — compute `estimatedWaveMs` on Pause/Stop click, add countdown via `setInterval`, render badge + update banner copy.
+- `src/pages/JobDetail.tsx` — countdown loop, p90 estimator, SVG progress ring component (inline), sessionStorage rehydration, a11y attributes, timeout handler refinement.
 
 ## Success criteria
 
-- Clicking **Pause** shows *"Pausing… ~32s left"* (or similar) immediately, with the number ticking down each second.
-- The estimate reflects recent real wave durations (from `meta_json.duration_ms` on `company_finished` logs), not a hard-coded 45s.
-- When the countdown hits 0 but the worker hasn't exited yet, the badge switches to *"finishing up…"* instead of going negative.
-- Same behavior for **Stop**.
-- No backend or DB changes.
+- Countdown ticks smoothly, never shows "0s left" or negative values.
+- Estimate reflects typical (not worst-outlier) wave duration.
+- Tiny progress ring visually communicates elapsed time.
+- Refreshing the page mid-transition restores the Pausing…/Stopping… UI.
+- Screen readers announce the transition.
+- Timeout fallback is actionable, not just informational.
 
