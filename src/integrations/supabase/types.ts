@@ -326,6 +326,30 @@ export type Database = {
           },
         ]
       }
+      domain_blocklist: {
+        Row: {
+          company_id: string | null
+          created_at: string
+          host: string
+          id: string
+          reason: string | null
+        }
+        Insert: {
+          company_id?: string | null
+          created_at?: string
+          host: string
+          id?: string
+          reason?: string | null
+        }
+        Update: {
+          company_id?: string | null
+          created_at?: string
+          host?: string
+          id?: string
+          reason?: string | null
+        }
+        Relationships: []
+      }
       exports: {
         Row: {
           created_at: string

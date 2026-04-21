@@ -45,7 +45,7 @@ export default function CreateJob() {
         file: f,
         parsed,
         mapping,
-        options: { attachJobId: null, ignoreDuplicates: true, overwriteEmpty: false, autoStart: false },
+        options: { attachJobId: null, ignoreDuplicates: true, overwriteEmpty: false, autoStart: false, defaultCountry: form.country || null },
         onProgress: (p, t) => setUploadProgress({ p, t }),
       });
     },

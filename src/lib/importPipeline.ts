@@ -54,6 +54,10 @@ export interface ImportOptions {
   ignoreDuplicates: boolean;
   overwriteEmpty: boolean;
   autoStart: boolean;
+  /** Default country applied to rows that don't have one (and to newly-created companies). */
+  defaultCountry?: string | null;
+  /** When set, newly-created companies are tagged so the resolver can scope retries. */
+  createdByJobId?: string | null;
 }
 
 export async function runImport(args: {
@@ -85,11 +89,14 @@ export async function runImport(args: {
     crawl_job_id: options.attachJobId,
   });
 
+  const defaultCountry = options.defaultCountry?.trim() || null;
+  const createdByJobId = options.createdByJobId ?? null;
+
   // Insert all import_rows up front as pending
   const pending = rows.map((r) => ({
     import_id: importRec.id,
     company_name: (r[cName] ?? "").trim() || "Unknown",
-    country: cCountry >= 0 ? r[cCountry] || null : null,
+    country: (cCountry >= 0 ? r[cCountry] : null) || defaultCountry,
     website: cWebsite >= 0 ? r[cWebsite] || null : null,
     industry: cIndustry >= 0 ? r[cIndustry] || null : null,
     notes: cNotes >= 0 ? r[cNotes] || null : null,
@@ -119,20 +126,30 @@ export async function runImport(args: {
             name: ir.company_name,
             domain,
             website: ir.website,
-            country: ir.country,
+            country: ir.country ?? defaultCountry,
             industry: ir.industry,
             notes: ir.notes,
             source_url: ir.website,
-          }).select("id").single();
+            created_by_job_id: createdByJobId,
+            domain_status: "resolved",
+          } as any).select("id").single();
           if (error) { status = "failed"; failed++; }
           else { companyId = created.id; status = "matched"; matched++; }
         }
       } else {
-        // Name-only row: dedup case-insensitively, else create new company.
-        // Domain resolution happens at the end of the import as a batched server job.
+        // Name-only row: scoped dedup — only reuse RESOLVED companies in the same country.
+        // This stops old "unresolved shells" from being silently re-attached and never retried.
         const trimmedName = (ir.company_name ?? "").trim();
-        const { data: byName } = await supabase.from("companies")
-          .select("id, domain").ilike("name", trimmedName).limit(1).maybeSingle();
+        const importCountry = ir.country ?? defaultCountry ?? null;
+        let dedupQuery = supabase.from("companies")
+          .select("id, domain, domain_status, country")
+          .ilike("name", trimmedName)
+          .eq("domain_status", "resolved")
+          .limit(1);
+        if (importCountry) {
+          dedupQuery = dedupQuery.or(`country.eq.${importCountry},country.is.null`);
+        }
+        const { data: byName } = await dedupQuery.maybeSingle();
         if (byName) {
           companyId = byName.id;
           status = options.ignoreDuplicates ? "duplicate" : "matched";
@@ -140,10 +157,11 @@ export async function runImport(args: {
         } else {
           const { data: created, error } = await supabase.from("companies").insert({
             name: trimmedName,
-            country: ir.country,
+            country: importCountry,
             industry: ir.industry,
             notes: ir.notes,
             domain_status: "unresolved",
+            created_by_job_id: createdByJobId,
           } as any).select("id").single();
           if (error) { status = "failed"; failed++; }
           else {

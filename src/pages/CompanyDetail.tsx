@@ -21,6 +21,19 @@ export default function CompanyDetail() {
   const people = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople() });
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
   const sourcePages = useQuery({ queryKey: ["sourcePages", id, "company"], queryFn: () => api.listSourcePages({ companyId: id }) });
+  const resolutionLog = useQuery({
+    queryKey: ["resolutionLog", id],
+    queryFn: async () => {
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data } = await supabase
+        .from("crawl_logs")
+        .select("id, level, message, meta_json, created_at")
+        .contains("meta_json", { companyId: id })
+        .order("created_at", { ascending: false })
+        .limit(1);
+      return (data ?? [])[0] ?? null;
+    },
+  });
 
   const c = company.data;
   const relContacts = useMemo(() => (contacts.data ?? []).filter((x) => x.companyId === id), [contacts.data, id]);
@@ -60,6 +73,28 @@ export default function CompanyDetail() {
             <div><dt className="text-muted-foreground text-xs">Pages crawled</dt><dd>{(sourcePages.data ?? []).length}</dd></div>
           </dl>
           {c.notes && <p className="mt-4 text-sm text-muted-foreground">{c.notes}</p>}
+          {resolutionLog.data && (() => {
+            const meta: any = (resolutionLog.data as any).meta_json ?? {};
+            const cands = Array.isArray(meta?.candidatesTop3) ? meta.candidatesTop3 : [];
+            return (
+              <div className="mt-4 rounded-md border border-border bg-muted/30 p-3 text-xs">
+                <p className="font-medium text-sm mb-1">Domain resolution</p>
+                <p className="text-muted-foreground mb-2">{(resolutionLog.data as any).message}</p>
+                {meta.query && <p><span className="text-muted-foreground">Winning query:</span> <span className="font-mono">{meta.query}</span></p>}
+                {meta.source && <p><span className="text-muted-foreground">Source:</span> {meta.source} (score {meta.score ?? "—"})</p>}
+                {cands.length > 0 && (
+                  <div className="mt-1.5">
+                    <p className="text-muted-foreground">Top candidates:</p>
+                    <ul className="list-disc list-inside font-mono">
+                      {cands.map((x: any, i: number) => (
+                        <li key={i}>{x.host} — {x.source} ({x.score})</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </SectionCard>
         <div className="grid grid-cols-2 gap-4">
           <KpiCard label="Contacts" value={fmtNum(relContacts.length)} icon={<Building2 className="h-4 w-4" />} />

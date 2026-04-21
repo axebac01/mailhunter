@@ -93,10 +93,10 @@ export default function JobDetail() {
   });
 
   const resolveDomains = useMutation({
-    mutationFn: async (vars?: { retryFailed?: boolean }) => {
+    mutationFn: async (vars?: { retryFailed?: boolean; reresolveAll?: boolean }) => {
       const { supabase } = await import("@/integrations/supabase/client");
       const { data, error } = await supabase.functions.invoke("resolve-domains-batch", {
-        body: { jobId: id, retryFailed: vars?.retryFailed ?? false },
+        body: { jobId: id, retryFailed: vars?.retryFailed ?? false, reresolveAll: vars?.reresolveAll ?? false },
       });
       if (error) throw error;
       return data as { resolved: number; failed: number; total: number; paymentRequired?: boolean };
@@ -150,6 +150,11 @@ export default function JobDetail() {
             {j.sourceType === "uploaded" && (domainStats.data?.failed ?? 0) > 0 && (
               <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate({ retryFailed: true })} disabled={resolveDomains.isPending}>
                 <Search className="h-4 w-4" /> Retry failed ({domainStats.data?.failed})
+              </Button>
+            )}
+            {j.sourceType === "uploaded" && (domainStats.data?.total ?? 0) > 0 && (
+              <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate({ reresolveAll: true })} disabled={resolveDomains.isPending}>
+                <Search className="h-4 w-4" /> Re-resolve all
               </Button>
             )}
             <AlertDialog>
