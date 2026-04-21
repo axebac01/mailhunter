@@ -31,17 +31,56 @@ export default function JobDetail() {
 
   const job = useQuery({ queryKey: ["job", id], queryFn: () => api.getJob(id), refetchInterval: 2500 });
 
-  const [pendingAction, setPendingAction] = useState<{ kind: "pausing" | "stopping"; startedAt: number; estimatedWaveMs: number } | null>(null);
+  type PendingAction = { kind: "pausing" | "stopping"; startedAt: number; estimatedWaveMs: number };
+  const PENDING_KEY = (jobId: string) => `jobDetail:pendingAction:${jobId}`;
+
+  const [pendingAction, setPendingActionState] = useState<PendingAction | null>(() => {
+    if (typeof window === "undefined" || !id) return null;
+    try {
+      const raw = sessionStorage.getItem(PENDING_KEY(id));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as PendingAction;
+      // Only rehydrate if startedAt is recent (< 90s old)
+      if (Date.now() - parsed.startedAt > 90_000) {
+        sessionStorage.removeItem(PENDING_KEY(id));
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  });
+
+  const setPendingAction = (next: PendingAction | null) => {
+    setPendingActionState(next);
+    if (typeof window === "undefined" || !id) return;
+    try {
+      if (next) sessionStorage.setItem(PENDING_KEY(id), JSON.stringify(next));
+      else sessionStorage.removeItem(PENDING_KEY(id));
+    } catch {
+      /* ignore quota / privacy errors */
+    }
+  };
+
   const [, setTick] = useState(0);
 
-  // 1s tick to drive countdown re-renders while a pause/stop is pending
+  // Smooth countdown via rAF, throttled to ~250ms updates. Avoids interval drift / focus jitter.
   useEffect(() => {
     if (!pendingAction) return;
-    const i = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(i);
+    let rafId = 0;
+    let last = 0;
+    const loop = (now: number) => {
+      if (now - last >= 250) {
+        last = now;
+        setTick((t) => (t + 1) % 1_000_000);
+      }
+      rafId = requestAnimationFrame(loop);
+    };
+    rafId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafId);
   }, [pendingAction]);
 
-  // Estimate wave duration from recent "company_finished" log entries
+  // Estimate wave duration: p90 of last 20 "company_finished" durations + 3s buffer.
   function estimateWaveMs(): number {
     const rows = (logs.data ?? []) as any[];
     const samples: number[] = [];
@@ -49,12 +88,31 @@ export default function JobDetail() {
       const meta = r?.meta ?? r?.meta_json;
       if (meta?.event === "company_finished" && typeof meta.duration_ms === "number") {
         samples.push(meta.duration_ms);
-        if (samples.length >= 10) break;
+        if (samples.length >= 20) break;
       }
     }
     if (samples.length === 0) return 45000;
-    const max = Math.max(...samples);
-    return Math.min(60000, Math.max(5000, max));
+    const sorted = [...samples].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9));
+    const p90 = sorted[idx];
+    return Math.min(60000, Math.max(5000, p90 + 3000));
+  }
+
+  // Inline circular progress ring used in the Pausing…/Stopping… pill.
+  function CountdownRing({ progress, className }: { progress: number; className?: string }) {
+    const r = 5;
+    const c = 2 * Math.PI * r;
+    const clamped = Math.max(0, Math.min(1, progress));
+    return (
+      <svg width="14" height="14" viewBox="0 0 14 14" className={className} aria-hidden="true">
+        <circle cx="7" cy="7" r={r} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="1.5" />
+        <circle
+          cx="7" cy="7" r={r} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - clamped)}
+          transform="rotate(-90 7 7)" style={{ transition: "stroke-dashoffset 250ms linear" }}
+        />
+      </svg>
+    );
   }
 
   // Lightweight poll for the latest log row while a pause/stop is pending
