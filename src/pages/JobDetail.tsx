@@ -93,10 +93,10 @@ export default function JobDetail() {
   });
 
   const resolveDomains = useMutation({
-    mutationFn: async (vars?: { retryFailed?: boolean }) => {
+    mutationFn: async (vars?: { retryFailed?: boolean; reresolveAll?: boolean }) => {
       const { supabase } = await import("@/integrations/supabase/client");
       const { data, error } = await supabase.functions.invoke("resolve-domains-batch", {
-        body: { jobId: id, retryFailed: vars?.retryFailed ?? false },
+        body: { jobId: id, retryFailed: vars?.retryFailed ?? false, reresolveAll: vars?.reresolveAll ?? false },
       });
       if (error) throw error;
       return data as { resolved: number; failed: number; total: number; paymentRequired?: boolean };
