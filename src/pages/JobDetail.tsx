@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe, Trash2, Search, Activity } from "lucide-react";
+import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe, Trash2, Search, Activity, Loader2 } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { api, type JobStatus } from "@/lib/api";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
@@ -351,14 +352,16 @@ export default function JobDetail() {
   );
 }
 
-const TIMELINE_EVENT_TYPES: TimelineEventType[] = ["pages_discovered", "page_crawled", "emails_found", "people_extracted", "company_started", "company_finished"];
-type FilterKey = "all" | "discovered" | "crawled" | "emails" | "people";
+const TIMELINE_EVENT_TYPES: TimelineEventType[] = ["pages_discovered", "page_crawled", "emails_found", "people_extracted", "company_started", "company_finished", "resolve_started", "resolve_deferred", "resolve_completed"];
+type FilterKey = "all" | "discovered" | "crawled" | "emails" | "people" | "resolver";
+const RESOLVER_EVENTS: TimelineEventType[] = ["resolve_started", "resolve_deferred", "resolve_completed"];
 const FILTER_TO_EVENTS: Record<FilterKey, TimelineEventType[]> = {
   all: TIMELINE_EVENT_TYPES,
   discovered: ["pages_discovered"],
   crawled: ["page_crawled"],
   emails: ["emails_found"],
   people: ["people_extracted"],
+  resolver: RESOLVER_EVENTS,
 };
 
 interface TimelineRow {
@@ -455,16 +458,51 @@ function JobTimeline({ jobId }: { jobId: string }) {
     return c;
   }, [rows]);
 
+  const resolverCount = useMemo(() => rows.filter((r) => r.event && RESOLVER_EVENTS.includes(r.event)).length, [rows]);
+
+  const deferred = useMemo(() => {
+    // rows are newest-first; find latest resolve_* event
+    for (const r of rows) {
+      if (r.event === "resolve_completed") return null;
+      if (r.event === "resolve_deferred") return r;
+      if (r.event === "resolve_started") return null;
+    }
+    return null;
+  }, [rows]);
+
   const chips: { key: FilterKey; label: string; n?: number }[] = [
     { key: "all", label: "All", n: rows.length },
     { key: "discovered", label: "Discovered" },
     { key: "crawled", label: "Crawled", n: counts.crawled },
     { key: "emails", label: "Emails", n: counts.emails },
     { key: "people", label: "People", n: counts.people },
+    { key: "resolver", label: "Resolver", n: resolverCount },
   ];
 
   return (
-    <SectionCard title="Pipeline timeline" description="Live events from the scraping pipeline" noPadding>
+    <div className="space-y-4">
+      {deferred && (() => {
+        const processed = deferred.meta?.processed ?? 0;
+        const remaining = deferred.meta?.remaining ?? 0;
+        const total = deferred.meta?.total ?? (processed + remaining);
+        const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+        return (
+          <div className="rounded-md border border-warning/40 bg-warning/5 px-4 py-3">
+            <div className="flex items-center gap-2 mb-2">
+              <Loader2 className="h-4 w-4 text-warning animate-spin" />
+              <span className="font-medium text-sm text-foreground">
+                Domain resolution in progress — {remaining} compan{remaining === 1 ? "y" : "ies"} remaining
+              </span>
+              <span className="ml-auto text-xs text-muted-foreground">{processed}/{total} · {pct}%</span>
+            </div>
+            <Progress value={pct} className="h-1.5" />
+            <p className="text-xs text-muted-foreground mt-2">
+              Last batch processed {deferred.meta?.wave_seconds ?? 0}s ago · continuing in background…
+            </p>
+          </div>
+        );
+      })()}
+      <SectionCard title="Pipeline timeline" description="Live events from the scraping pipeline" noPadding>
       <div className="px-5 py-3 border-b border-border flex flex-wrap items-center gap-2">
         {chips.map((c) => (
           <button
@@ -508,5 +546,6 @@ function JobTimeline({ jobId }: { jobId: string }) {
         )}
       </div>
     </SectionCard>
+    </div>
   );
 }

@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Globe, FileText, Mail, Users, Play, Check, AlertCircle } from "lucide-react";
+import { Globe, FileText, Mail, Users, Play, Check, AlertCircle, Search, Clock, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtRelative } from "@/lib/format";
 
@@ -9,7 +9,10 @@ export type TimelineEventType =
   | "emails_found"
   | "people_extracted"
   | "company_started"
-  | "company_finished";
+  | "company_finished"
+  | "resolve_started"
+  | "resolve_deferred"
+  | "resolve_completed";
 
 interface Props {
   event: TimelineEventType;
@@ -25,6 +28,9 @@ const CONFIG: Record<TimelineEventType, { color: string; bg: string; Icon: any; 
   people_extracted:  { color: "text-primary",   bg: "bg-primary/10",   Icon: Users,       label: "People" },
   company_started:   { color: "text-muted-foreground", bg: "bg-muted", Icon: Play,        label: "Start" },
   company_finished:  { color: "text-muted-foreground", bg: "bg-muted", Icon: Check,       label: "Done" },
+  resolve_started:   { color: "text-info",      bg: "bg-info/10",      Icon: Search,      label: "Resolving" },
+  resolve_deferred:  { color: "text-warning",   bg: "bg-warning/10",   Icon: Clock,       label: "Deferred" },
+  resolve_completed: { color: "text-success",   bg: "bg-success/10",   Icon: CheckCircle2,label: "Resolved" },
 };
 
 function summarize(event: TimelineEventType, meta: any): string {
@@ -60,8 +66,24 @@ function summarize(event: TimelineEventType, meta: any): string {
       const ms = meta?.duration_ms ?? 0;
       return `Finished ${company} in ${Math.round(ms / 1000)}s${meta?.ok === false ? " (with errors)" : ""}`;
     }
+    case "resolve_started": {
+      const country = meta?.country ? ` (${meta.country})` : "";
+      const modeMap: Record<string, string> = { reresolve: "Re-resolving", retry: "Retrying", initial: "Started resolving" };
+      const verb = modeMap[meta?.mode] ?? "Started resolving";
+      return `${verb} ${meta?.total ?? 0} domain${meta?.total === 1 ? "" : "s"}${country}`;
+    }
+    case "resolve_deferred": {
+      const total = meta?.total ?? ((meta?.processed ?? 0) + (meta?.remaining ?? 0));
+      return `Paused after ${meta?.processed ?? 0}/${total} — ${meta?.remaining ?? 0} remaining, continuing in background…`;
+    }
+    case "resolve_completed": {
+      if (meta?.payment_required) return `Domain resolution stopped — Firecrawl insufficient credits.`;
+      return `Domain resolution complete — ${meta?.resolved ?? 0} resolved, ${meta?.failed ?? 0} failed`;
+    }
   }
 }
+
+const RESOLVER_EVENTS = new Set<TimelineEventType>(["resolve_started", "resolve_deferred", "resolve_completed"]);
 
 export function TimelineEvent({ event, createdAt, meta, level }: Props) {
   const cfg = CONFIG[event];
@@ -71,6 +93,8 @@ export function TimelineEvent({ event, createdAt, meta, level }: Props) {
   const bgOverride = level === "error" ? "bg-destructive/10" : cfg.bg;
   const companyId = meta?.company_id;
   const company = meta?.company ?? meta?.host;
+  const isResolver = RESOLVER_EVENTS.has(event);
+  const title = isResolver ? "Domain resolver" : company;
 
   return (
     <div className="flex items-start gap-3 px-5 py-3 hover:bg-muted/40 transition-colors">
@@ -79,12 +103,12 @@ export function TimelineEvent({ event, createdAt, meta, level }: Props) {
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2 flex-wrap">
-          {companyId ? (
+          {companyId && !isResolver ? (
             <Link to={`/companies/${companyId}`} className="font-medium text-sm hover:underline truncate">
-              {company}
+              {title}
             </Link>
           ) : (
-            <span className="font-medium text-sm truncate">{company}</span>
+            <span className="font-medium text-sm truncate">{title}</span>
           )}
           <span className={cn("text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded", bgOverride, colorOverride)}>
             {cfg.label}

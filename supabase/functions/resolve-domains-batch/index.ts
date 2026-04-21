@@ -514,9 +514,11 @@ Deno.serve(async (req) => {
     const TIME_BUDGET_MS = 100_000; // leave headroom for the 150s wall
     const startedAt = Date.now();
 
+    const mode = reresolveAll ? "reresolve" : retryFailed ? "retry" : "initial";
     if (jobId) await supabase.from("crawl_logs").insert({
       crawl_job_id: jobId, level: "info",
       message: `${reresolveAll ? "Re-resolving ALL" : retryFailed ? "Retrying failed" : "Resolving"} domains for ${todo.length} companies (concurrency ${CONCURRENCY}${jobCountry ? `, country: ${jobCountry}` : ""})…`,
+      meta_json: { event: "resolve_started", total: todo.length, mode, country: jobCountry, concurrency: CONCURRENCY },
     });
 
     let resolved = 0, failed = 0, paymentErr = false;
@@ -555,9 +557,17 @@ Deno.serve(async (req) => {
 
     // Schedule continuation in the background (does NOT block the response)
     if (remaining.length > 0 && !paymentErr) {
+      const waveSeconds = Math.round((Date.now() - startedAt) / 1000);
       if (jobId) await supabase.from("crawl_logs").insert({
         crawl_job_id: jobId, level: "info",
         message: `Time budget reached — continuing ${remaining.length} more companies in the background…`,
+        meta_json: {
+          event: "resolve_deferred",
+          processed, resolved, failed,
+          remaining: remaining.length,
+          total: todo.length,
+          wave_seconds: waveSeconds,
+        },
       });
       const continuation = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/resolve-domains-batch`, {
         method: "POST",
@@ -578,6 +588,11 @@ Deno.serve(async (req) => {
         message: paymentErr
           ? "Firecrawl returned 402 (insufficient credits) — top up to continue."
           : `Domain resolution complete: ${resolved} resolved, ${failed} failed.`,
+        meta_json: {
+          event: "resolve_completed",
+          resolved, failed, total: todo.length,
+          payment_required: paymentErr,
+        },
       });
     }
 
