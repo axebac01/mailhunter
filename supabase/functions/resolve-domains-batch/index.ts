@@ -508,32 +508,83 @@ Deno.serve(async (req) => {
       ? allCompanies.filter((c: any) => !c.domain && c.domain_status === "failed")
       : allCompanies.filter((c: any) => !c.domain);
 
+    // Time-budget the run so we always reply well under the 150s edge timeout.
+    // Process a slice this invocation; if more remain, fire-and-forget a
+    // self-invocation in the background to continue with the rest.
+    const TIME_BUDGET_MS = 100_000; // leave headroom for the 150s wall
+    const startedAt = Date.now();
+
     if (jobId) await supabase.from("crawl_logs").insert({
       crawl_job_id: jobId, level: "info",
       message: `${reresolveAll ? "Re-resolving ALL" : retryFailed ? "Retrying failed" : "Resolving"} domains for ${todo.length} companies (concurrency ${CONCURRENCY}${jobCountry ? `, country: ${jobCountry}` : ""})…`,
     });
 
     let resolved = 0, failed = 0, paymentErr = false;
-    const results = await runPool(todo, async (c: any) => {
-      try {
-        return await withTimeout(
-          resolveOne(c, jobCountry, apiKey, supabase, jobId, blocklistGlobal),
-          PER_COMPANY_TIMEOUT_MS,
-          { id: c.id, status: "failed" as const },
-        );
+    let processed = 0;
+    const remaining: string[] = [];
+
+    // Process items in small waves; stop and defer the rest when budget is tight.
+    const WAVE = CONCURRENCY;
+    for (let i = 0; i < todo.length; i += WAVE) {
+      if (Date.now() - startedAt > TIME_BUDGET_MS) {
+        for (let j = i; j < todo.length; j++) remaining.push(todo[j].id);
+        break;
       }
-      catch (e: any) { if (e?.message === "FIRECRAWL_PAYMENT_REQUIRED") paymentErr = true; return { id: c.id, status: "failed" as const }; }
-    }, CONCURRENCY);
-    for (const r of results) { if ((r as any)?.status === "resolved") resolved++; else failed++; }
+      const slice = todo.slice(i, i + WAVE);
+      const waveResults = await runPool(slice, async (c: any) => {
+        try {
+          return await withTimeout(
+            resolveOne(c, jobCountry, apiKey, supabase, jobId, blocklistGlobal),
+            PER_COMPANY_TIMEOUT_MS,
+            { id: c.id, status: "failed" as const },
+          );
+        } catch (e: any) {
+          if (e?.message === "FIRECRAWL_PAYMENT_REQUIRED") paymentErr = true;
+          return { id: c.id, status: "failed" as const };
+        }
+      }, WAVE);
+      for (const r of waveResults) {
+        if ((r as any)?.status === "resolved") resolved++; else failed++;
+        processed++;
+      }
+      if (paymentErr) {
+        for (let j = i + WAVE; j < todo.length; j++) remaining.push(todo[j].id);
+        break;
+      }
+    }
 
-    if (jobId) await supabase.from("crawl_logs").insert({
-      crawl_job_id: jobId, level: paymentErr ? "error" : "success",
-      message: paymentErr
-        ? "Firecrawl returned 402 (insufficient credits) — top up to continue."
-        : `Domain resolution complete: ${resolved} resolved, ${failed} failed.`,
-    });
+    // Schedule continuation in the background (does NOT block the response)
+    if (remaining.length > 0 && !paymentErr) {
+      if (jobId) await supabase.from("crawl_logs").insert({
+        crawl_job_id: jobId, level: "info",
+        message: `Time budget reached — continuing ${remaining.length} more companies in the background…`,
+      });
+      const continuation = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/resolve-domains-batch`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+        },
+        body: JSON.stringify({ companyIds: remaining, jobId, retryFailed, reresolveAll }),
+      }).catch(() => {});
+      // @ts-ignore — EdgeRuntime is provided by Supabase Edge runtime
+      if (typeof EdgeRuntime !== "undefined" && (EdgeRuntime as any).waitUntil) {
+        // @ts-ignore
+        (EdgeRuntime as any).waitUntil(continuation);
+      }
+    } else if (jobId) {
+      await supabase.from("crawl_logs").insert({
+        crawl_job_id: jobId, level: paymentErr ? "error" : "success",
+        message: paymentErr
+          ? "Firecrawl returned 402 (insufficient credits) — top up to continue."
+          : `Domain resolution complete: ${resolved} resolved, ${failed} failed.`,
+      });
+    }
 
-    return new Response(JSON.stringify({ resolved, failed, total: todo.length, paymentRequired: paymentErr }), {
+    return new Response(JSON.stringify({
+      resolved, failed, processed, total: todo.length,
+      deferred: remaining.length, paymentRequired: paymentErr,
+    }), {
       status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
