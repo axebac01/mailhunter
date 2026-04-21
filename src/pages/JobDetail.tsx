@@ -323,7 +323,19 @@ export default function JobDetail() {
         </div>
       )}
 
-      {(j.status === "paused" || j.status === "stopped") && (
+      {pendingAction ? (
+        <div className={cn(
+          "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
+          pendingAction.kind === "pausing" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
+        )}>
+          <Loader2 className={cn("h-4 w-4 animate-spin", pendingAction.kind === "pausing" ? "text-warning" : "text-muted-foreground")} />
+          <span>
+            {pendingAction.kind === "pausing"
+              ? "Pausing scraper — waiting for the current batch to finish (up to ~45s)…"
+              : "Stopping scraper — waiting for the current batch to finish (up to ~45s)…"}
+          </span>
+        </div>
+      ) : (j.status === "paused" || j.status === "stopped") && (
         <div className={cn(
           "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
           j.status === "paused" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
