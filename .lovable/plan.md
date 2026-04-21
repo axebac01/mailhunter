@@ -2,107 +2,63 @@
 
 ## Goal
 
-Make the import pipeline 10–50× faster and more robust by replacing the sequential row-by-row loop with **bulk set-based operations**, while keeping the existing UX (live progress, status per row, scoped dedup, fire-and-forget domain resolver).
-
-## Root causes of current slowness
-
-For an N-row import, today we make roughly **2N+ sequential round-trips** to the database:
-1. For each row: 1 SELECT (dedup) + 1 INSERT (new company) + 1 UPDATE (`import_rows`).
-2. Progress UPDATE on `imports` every 5 rows.
-3. No parallelism — entirely serial `await` in a `for` loop.
-
-On a 1500-row file with ~80 ms latency that's **~4–5 minutes of pure round-trip time**, before any actual work.
+Surface `resolve-domains-batch` deferral status on the Job Timeline so users can see when domain resolution was paused due to the 150 s edge-function budget and how many companies remain to be processed in the background.
 
 ## Approach
 
-### 1. Bulk-first pipeline (server-side set operations)
+### 1. Emit two new structured timeline events from the resolver
 
-Replace the per-row loop with **5 set-based phases**, each one or two SQL statements:
+In `supabase/functions/resolve-domains-batch/index.ts`, replace the two existing free-form info logs with `meta_json.event`-tagged inserts so the Timeline can render them as first-class rows:
 
-**Phase A — Parse & normalize in-memory (no DB):**
-- Parse the file (already fast).
-- For every row, compute `domain` from `website` once.
-- Lowercase & trim names; normalize country (reuse normalization map from resolver).
-- Bucket rows into two arrays: `withDomain[]` and `nameOnly[]`.
+- `resolve_deferred` — emitted when the time budget is reached and a continuation is scheduled. Payload: `{ event, processed, resolved, failed, remaining: remaining.length, wave_seconds: Math.round((Date.now()-startedAt)/1000) }`. Level: `info`.
+- `resolve_completed` — emitted when there is nothing more to defer (final wave). Payload: `{ event, resolved, failed, total: todo.length, payment_required: paymentErr }`. Level: `success` (or `error` when `paymentErr`).
+- Also emit `resolve_started` at the top of the run with `{ event, total: todo.length, mode: reresolveAll ? 'reresolve' : retryFailed ? 'retry' : 'initial', country: jobCountry }`. Level: `info`.
 
-**Phase B — Bulk-fetch existing companies in 2 queries:**
-- One `SELECT id, domain FROM companies WHERE domain = ANY($1)` for every distinct domain in `withDomain`.
-- One `SELECT id, lower(name) AS name, country FROM companies WHERE domain_status='resolved' AND lower(name) = ANY($1) AND (country = ANY($2) OR country IS NULL)` for every distinct name in `nameOnly`.
-- Build two in-memory lookup maps (`domainToId`, `nameKeyToId`).
+These reuse the existing `crawl_logs` insert path, so realtime delivery to the Timeline already works — no migration needed.
 
-**Phase C — Bulk-insert all new companies in chunks of 500:**
-- For rows whose domain/name didn't match, build company insert payloads.
-- Single `supabase.from('companies').insert(chunk).select('id, domain, name')` per chunk.
-- Merge returned ids back into the lookup maps.
-- Use Postgres `ON CONFLICT` semantics where possible — for `domain`, attempt an upsert with `onConflict: 'domain', ignoreDuplicates: false` to atomically dedupe in case two rows in the same import share a domain.
+### 2. Render the new event types in the Timeline
 
-**Phase D — Bulk-insert all `import_rows` with their final status in one shot per chunk:**
-- Today we insert all rows as `pending` first, then UPDATE each one. Eliminate the UPDATE entirely by inserting them with their final `status` + `matched_company_id` + `matched_domain` already set, in chunks of 500.
-- This removes N updates → 0 updates.
+In `src/components/app/TimelineEvent.tsx`:
 
-**Phase E — Single final UPDATE on `imports`:**
-- One UPDATE with totals: `processed_rows`, `matched_rows`, `failed_rows`, `status='completed'`.
-- Progress updates during phases C/D fire every chunk (every ~500 rows) instead of every 5.
+- Extend `TimelineEventType` with `resolve_started | resolve_deferred | resolve_completed`.
+- Add `CONFIG` entries with distinct icons/colors:
+  - `resolve_started` — `Search` icon, `text-info / bg-info/10`, label "Resolving"
+  - `resolve_deferred` — `Clock` icon, `text-warning / bg-warning/10`, label "Deferred"
+  - `resolve_completed` — `CheckCircle2` icon, `text-success / bg-success/10`, label "Resolved"
+- Add `summarize` cases producing one-line summaries, e.g.:
+  - "Started resolving 977 domains (Sweden)"
+  - "Paused after 412/977 — 565 remaining, continuing in background…"
+  - "Domain resolution complete — 834 resolved, 143 failed"
 
-### 2. Parallelize chunk inserts
+Because `meta.company` may not exist for these events, fall back to a generic title row ("Domain resolver") instead of the company link when `companyId` is absent.
 
-- Run chunked company inserts and chunked `import_rows` inserts with `Promise.all` over chunks (cap concurrency at 4 to be polite to the DB).
-- For a 1500-row file this is ~3 chunks of 500, all in parallel — ~1 round-trip worth of latency.
+### 3. Persistent banner on the Job Detail page while deferred
 
-### 3. Preserve in-import dedup
+In `src/pages/JobDetail.tsx`, derive a small `deferredStatus` from the timeline state already loaded:
 
-When two rows in the same file have the same domain or same `(name, country)`:
-- **Same domain**: collapse into one company insert; both `import_rows` point to the same `matched_company_id` with the second marked `duplicate` (when `ignoreDuplicates` is on).
-- **Same name+country (name-only)**: same collapse logic via in-memory map keyed by `lower(name)|country`.
+- Find the most recent `resolve_started`, `resolve_deferred`, and `resolve_completed` events for this job.
+- If the latest event is `resolve_deferred` (and no later `resolve_completed`), show a `SectionCard`-style alert above the Timeline with:
+  - Animated `Loader2` spinner + warning color
+  - "Domain resolution in progress — N companies remaining"
+  - A `Progress` bar (`processed / (processed + remaining)` from the deferred event payload)
+  - Subtext: "Started Xs ago · last batch processed Y companies"
+- The banner is reactive — when the next `resolve_deferred` arrives via the existing realtime subscription, the remaining count updates; when `resolve_completed` arrives, the banner disappears automatically.
 
-This is impossible to do cleanly in the current per-row loop and is a real correctness improvement, not just a perf one.
+### 4. Filter chip
 
-### 4. Parser performance
-
-- For large files (>5k rows), parse off the main thread:
-  - Add a tiny `src/workers/parseFile.worker.ts` that runs `XLSX.read` + `sheet_to_json`.
-  - `parseFile()` posts the file to the worker and resolves with the parsed shape.
-  - Keeps the UI responsive on 50k-row uploads.
-- Stream `xlsx` with `dense: true` and skip empty rows during parse to reduce memory.
-
-### 5. Better progress UX
-
-- Switch progress from "rows processed" to **3 phase markers**: *Parsing → Matching → Saving*, plus row-count on the active phase.
-- Live counter in `Imports.tsx` updates per chunk (already wired through `onProgress`, just emit phase + counts).
-- Show estimated time remaining once we've completed one chunk (simple linear extrapolation).
-
-### 6. Resilience
-
-- Wrap each chunk insert in try/catch; on chunk failure, fall back to per-row insert **for that chunk only** so one bad row doesn't blow up 499 good ones.
-- Mark unrecoverable rows as `failed` with `error_message` set from PG error.
-- Final summary toast: "Imported 1500 rows in 4.2s — 1487 matched, 13 failed".
-
-### 7. Don't block the resolver enqueue
-
-- After Phase E, fire-and-forget `resolve-domains-batch` exactly as today (no change).
-- Bonus: pass `companyIds` array directly so the resolver doesn't need to re-query unresolved companies for this import.
+Add a "Resolver" chip to the existing Timeline filter strip that toggles the three new event types together, so users can isolate the resolver narrative.
 
 ## Files to change
 
-- `src/lib/importPipeline.ts` — rewrite `runImport` with bulk phases A–E; keep public API (`runImport`, `parseFile`, `autoMap`, types) identical so callers don't change
-- `src/workers/parseFile.worker.ts` — new web worker for off-thread parsing
-- `src/lib/api.ts` — add `bulkInsertCompanies(rows, chunk)`, `bulkInsertImportRowsWithStatus(rows, chunk)`, `findCompaniesByDomains(domains[])`, `findResolvedCompaniesByNames(names[], countries[])`
-- `src/pages/Imports.tsx` — show phase + ETA in the progress bar (small UX upgrade)
-- `supabase/functions/resolve-domains-batch/index.ts` — accept optional `companyIds` array to skip the unresolved-company query
+- `supabase/functions/resolve-domains-batch/index.ts` — emit `resolve_started`, `resolve_deferred`, `resolve_completed` structured logs
+- `src/components/app/TimelineEvent.tsx` — extend type, CONFIG, and summarize for the three new events
+- `src/pages/JobDetail.tsx` — deferred-status banner derived from timeline, plus "Resolver" filter chip
 
-No DB migration required.
-
-## Expected impact
-
-Measured on a typical 1500-row file (current ~3–5 min):
-- Round-trips drop from ~3000 to ~10.
-- Wall time target: **< 5 seconds** end-to-end (excluding the post-import domain resolver, which runs server-side).
-- Dedup correctness: duplicate rows within the same file now collapse cleanly instead of racing.
+No DB migration required — `crawl_logs` already streams via realtime.
 
 ## Success criteria
 
-- 1500-row import completes in < 5 s on a typical connection.
-- 10k-row import completes in < 30 s and doesn't freeze the UI (worker parse).
-- Same final row counts in `imports`, `import_rows`, `companies` as the current implementation on identical input.
-- Domain resolver still kicks off automatically and processes the same set of unresolved companies.
+- During a large import, the Job Timeline shows a "Deferred" event each time the edge function hands off to itself, with an accurate `remaining` count.
+- A persistent banner with a live progress bar appears above the timeline while resolution is deferred and disappears within ~1 s of completion.
+- Filtering by "Resolver" shows only the start / deferred / completed entries.
 
