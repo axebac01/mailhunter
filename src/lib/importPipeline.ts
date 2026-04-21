@@ -603,6 +603,26 @@ function enqueueResolverWaves(ctx: PipelineCtx) {
 }
 
 // ============================================================================
+// Cancellation registry
+// ============================================================================
+
+const importControllers: Map<string, { cancelled: boolean }> = (globalThis as any).__importControllers ??= new Map();
+
+export function cancelImport(importId: string): void {
+  const c = importControllers.get(importId);
+  if (c) c.cancelled = true;
+  // Best-effort: mark the import row as failed immediately so UI reflects it.
+  api.updateImport(importId, {
+    status: "failed",
+  }).catch(() => {});
+  // Also annotate the most recent error_message-less stub via an empty row note? Skip — keep simple.
+}
+
+export function isImportCancelled(importId: string): boolean {
+  return !!importControllers.get(importId)?.cancelled;
+}
+
+// ============================================================================
 // Main entry
 // ============================================================================
 
@@ -660,6 +680,9 @@ export async function runImport(args: RunImportArgs): Promise<string> {
     resolverInflight: [],
   };
 
+  const controller = { cancelled: false };
+  importControllers.set(ctx.importId, controller);
+
   emit("matching", 0, totalUpFront);
 
   const runOneBatch = async (rows: string[][]) => {
@@ -669,11 +692,9 @@ export async function runImport(args: RunImportArgs): Promise<string> {
       ctx.failedRows += failed;
       ctx.processedRows += rows.length;
     } catch (e: any) {
-      // Whole batch failed → mark every row as failed but keep going.
       const errMsg = String(e?.message ?? e);
       ctx.failedRows += rows.length;
       ctx.processedRows += rows.length;
-      // Try to write minimal failure rows so the user sees them.
       const stub = rows.map((r) => ({
         import_id: ctx.importId,
         company_name: (r[col.name] ?? "").trim() || "Unknown",
@@ -693,43 +714,201 @@ export async function runImport(args: RunImportArgs): Promise<string> {
       total_rows: ctx.totalRows,
     }).catch(() => {});
 
-    // Fire resolver waves opportunistically as new companies accumulate.
     if (ctx.insertedCompanyIds.length >= RESOLVER_WAVE_SIZE * 2) {
       enqueueResolverWaves(ctx);
     }
   };
 
-  if (parseResult.kind === "buffered") {
-    const allRows = parseResult.parsed.rows;
-    const batches = chunk(allRows, BATCH_SIZE);
-    for (const batch of batches) {
-      await runOneBatch(batch);
+  let cancelledMidRun = false;
+  try {
+    if (parseResult.kind === "buffered") {
+      const allRows = parseResult.parsed.rows;
+      const batches = chunk(allRows, BATCH_SIZE);
+      for (const batch of batches) {
+        if (controller.cancelled) { cancelledMidRun = true; break; }
+        await runOneBatch(batch);
+      }
+    } else {
+      await parseResult.iterate(async (rows) => {
+        if (controller.cancelled) { cancelledMidRun = true; return; }
+        await runOneBatch(rows);
+      });
     }
-  } else {
-    const total = await parseResult.iterate(runOneBatch);
-    if (total === 0 && ctx.processedRows === 0) {
-      // empty file
+
+    if (cancelledMidRun) {
+      await api.updateImport(ctx.importId, {
+        status: "failed",
+        processed_rows: ctx.processedRows,
+        matched_rows: ctx.matchedRows,
+        failed_rows: ctx.failedRows,
+        total_rows: ctx.totalRows,
+      });
+      emit("done", ctx.processedRows, ctx.totalRows);
+      return ctx.importId;
     }
+
+    enqueueResolverWaves(ctx);
+
+    await api.updateImport(ctx.importId, {
+      status: ctx.processedRows > 0 && ctx.failedRows === ctx.processedRows ? "failed" : "completed",
+      processed_rows: ctx.processedRows,
+      matched_rows: ctx.matchedRows,
+      failed_rows: ctx.failedRows,
+      total_rows: ctx.processedRows,
+    });
+
+    emit("done", ctx.processedRows, ctx.processedRows);
+
+    if (ctx.resolverWavesQueued === 0) {
+      supabase.functions.invoke("resolve-domains-batch", { body: { importId: ctx.importId } }).catch(() => {});
+    }
+
+    return ctx.importId;
+  } finally {
+    importControllers.delete(ctx.importId);
   }
+}
 
-  // Final resolver wave for any leftover ids
-  enqueueResolverWaves(ctx);
+// ============================================================================
+// Restart: re-process an existing import from its stored import_rows.
+// No file required — uses what's in the DB.
+// ============================================================================
 
-  await api.updateImport(ctx.importId, {
-    status: ctx.processedRows > 0 && ctx.failedRows === ctx.processedRows ? "failed" : "completed",
-    processed_rows: ctx.processedRows,
-    matched_rows: ctx.matchedRows,
-    failed_rows: ctx.failedRows,
-    total_rows: ctx.processedRows,
+export async function restartImport(
+  importId: string,
+  onProgress?: (processed: number, total: number, phase?: ImportPhase) => void,
+): Promise<string> {
+  const imp = await api.getImport(importId);
+  if (!imp) throw new Error("Import not found");
+
+  const rows = await api.listImportRows(importId);
+  const total = rows.length;
+
+  await api.updateImport(importId, {
+    status: "processing",
+    processed_rows: 0,
+    matched_rows: 0,
+    failed_rows: 0,
+    total_rows: total,
   });
 
-  emit("done", ctx.processedRows, ctx.processedRows);
+  const controller = { cancelled: false };
+  importControllers.set(importId, controller);
 
-  // If no new companies were inserted, still ping the resolver once so any
-  // pre-existing unresolved companies attached to this import get processed.
-  if (ctx.resolverWavesQueued === 0) {
-    supabase.functions.invoke("resolve-domains-batch", { body: { importId: ctx.importId } }).catch(() => {});
+  const ctx: PipelineCtx = {
+    importId,
+    ignoreDuplicates: true,
+    createdByJobId: null,
+    seenDomain: new Set(),
+    seenNameKey: new Set(),
+    domainCache: new LRU(20_000),
+    nameKeyCache: new LRU(20_000),
+    totalRows: total,
+    processedRows: 0,
+    matchedRows: 0,
+    failedRows: 0,
+    insertedCompanyIds: [],
+    resolverWavesQueued: 0,
+    resolverInflight: [],
+  };
+
+  const emit = (phase: ImportPhase) => onProgress?.(ctx.processedRows, ctx.totalRows, phase);
+  emit("matching");
+
+  const keepMatched = rows.filter((r) => r.matchedCompanyId && (r.status === "matched" || r.status === "duplicate"));
+  const toRetry = rows.filter((r) => !(r.matchedCompanyId && (r.status === "matched" || r.status === "duplicate")));
+
+  ctx.matchedRows += keepMatched.length;
+  ctx.processedRows += keepMatched.length;
+  for (const r of keepMatched) {
+    if (r.matchedDomain) ctx.seenDomain.add(r.matchedDomain);
+    const nk = `${r.companyName.trim().toLowerCase()}|${(r.country ?? "").toLowerCase()}`;
+    ctx.seenNameKey.add(nk);
   }
+  emit("saving");
+  api.updateImport(importId, {
+    processed_rows: ctx.processedRows,
+    matched_rows: ctx.matchedRows,
+    total_rows: ctx.totalRows,
+  }).catch(() => {});
 
-  return ctx.importId;
+  const col = { name: 0, country: 1, website: 2, industry: 3, notes: 4 };
+
+  try {
+    const batches = chunk(toRetry, BATCH_SIZE);
+    for (const batch of batches) {
+      if (controller.cancelled) {
+        await api.updateImport(importId, {
+          status: "failed",
+          processed_rows: ctx.processedRows,
+          matched_rows: ctx.matchedRows,
+          failed_rows: ctx.failedRows,
+          total_rows: ctx.totalRows,
+        });
+        return importId;
+      }
+
+      const ids = batch.map((r) => r.id);
+      try { await supabase.from("import_rows").delete().in("id", ids); } catch { /* swallow */ }
+
+      const synthetic: string[][] = batch.map((r) => [
+        r.companyName ?? "",
+        r.country ?? "",
+        r.website ?? "",
+        r.industry ?? "",
+        r.notes ?? "",
+      ]);
+
+      try {
+        const { matched, failed } = await processBatch(ctx, synthetic, col, null);
+        ctx.matchedRows += matched;
+        ctx.failedRows += failed;
+        ctx.processedRows += synthetic.length;
+      } catch (e: any) {
+        ctx.failedRows += synthetic.length;
+        ctx.processedRows += synthetic.length;
+        const errMsg = String(e?.message ?? e);
+        const stub = synthetic.map((r) => ({
+          import_id: importId,
+          company_name: r[0] || "Unknown",
+          country: r[1] || null,
+          status: "failed" as const,
+          error_message: errMsg.slice(0, 500),
+        }));
+        try { await supabase.from("import_rows").insert(stub as any); } catch { /* swallow */ }
+      }
+
+      emit("saving");
+      api.updateImport(importId, {
+        processed_rows: ctx.processedRows,
+        matched_rows: ctx.matchedRows,
+        failed_rows: ctx.failedRows,
+        total_rows: ctx.totalRows,
+      }).catch(() => {});
+
+      if (ctx.insertedCompanyIds.length >= RESOLVER_WAVE_SIZE * 2) {
+        enqueueResolverWaves(ctx);
+      }
+    }
+
+    enqueueResolverWaves(ctx);
+
+    await api.updateImport(importId, {
+      status: ctx.processedRows > 0 && ctx.failedRows === ctx.processedRows ? "failed" : "completed",
+      processed_rows: ctx.processedRows,
+      matched_rows: ctx.matchedRows,
+      failed_rows: ctx.failedRows,
+      total_rows: ctx.totalRows,
+    });
+
+    emit("done");
+
+    if (ctx.resolverWavesQueued === 0) {
+      supabase.functions.invoke("resolve-domains-batch", { body: { importId } }).catch(() => {});
+    }
+
+    return importId;
+  } finally {
+    importControllers.delete(importId);
+  }
 }

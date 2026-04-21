@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Upload, FileText, X, CheckCircle2, ArrowRight } from "lucide-react";
+import { Upload, FileText, X, CheckCircle2, ArrowRight, Square, RotateCw, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { autoMap, parseFile, runImport, checkLargeXlsx, type Mapping, type ParseResult } from "@/lib/importPipeline";
+import { autoMap, parseFile, runImport, restartImport, cancelImport, checkLargeXlsx, type Mapping, type ParseResult } from "@/lib/importPipeline";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { EmptyState } from "@/components/app/EmptyState";
@@ -116,6 +116,29 @@ export default function Imports() {
     mutationFn: (id: string) => api.deleteImport(id),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["imports"] }); qc.invalidateQueries({ queryKey: ["kpis"] }); toast.success("Import deleted"); },
   });
+
+  const restartMut = useMutation({
+    mutationFn: (id: string) => restartImport(id, (p, t, phase) => {
+      activeImports.set(id, { phase: phase ?? "saving", p, t, startedAt: Date.now() });
+    }),
+    onSuccess: (id) => {
+      activeImports.delete(id);
+      qc.invalidateQueries({ queryKey: ["imports"] });
+      qc.invalidateQueries({ queryKey: ["companies"] });
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+      toast.success("Import restarted");
+    },
+    onError: (e: any, id) => {
+      activeImports.delete(id);
+      toast.error(e?.message ?? "Restart failed");
+    },
+  });
+
+  const stopImport = (id: string) => {
+    cancelImport(id);
+    toast.message("Stopping import…");
+    qc.invalidateQueries({ queryKey: ["imports"] });
+  };
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
@@ -249,7 +272,7 @@ export default function Imports() {
                 <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Processed</TableHead>
                 <TableHead className="text-right">Matched</TableHead><TableHead className="text-right">Failed</TableHead>
                 <TableHead className="text-right">Contacts</TableHead><TableHead className="text-right">People</TableHead>
-                <TableHead className="w-24" />
+                <TableHead className="w-40" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -265,7 +288,37 @@ export default function Imports() {
                   <TableCell className="text-right tabular-nums">{fmtNum(i.contactsFound)}</TableCell>
                   <TableCell className="text-right tabular-nums">{fmtNum(i.peopleFound)}</TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => del.mutate(i.id)}><X className="h-4 w-4" /></Button>
+                    <div className="flex items-center justify-end gap-1">
+                      {i.status === "processing" && (
+                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Stop import" onClick={() => stopImport(i.id)}>
+                          <Square className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {(i.status === "completed" || i.status === "failed") && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          title="Restart import"
+                          disabled={restartMut.isPending && restartMut.variables === i.id}
+                          onClick={() => restartMut.mutate(i.id)}
+                        >
+                          {restartMut.isPending && restartMut.variables === i.id
+                            ? <Loader2 className="h-4 w-4 animate-spin" />
+                            : <RotateCw className="h-4 w-4" />}
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        title="Delete import"
+                        disabled={i.status === "processing"}
+                        onClick={() => del.mutate(i.id)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

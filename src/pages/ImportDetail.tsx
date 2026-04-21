@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, FileText, Filter, Search, Briefcase, Plus, Loader2 } from "lucide-react";
+import { ArrowLeft, FileText, Filter, Search, Briefcase, Plus, Loader2, Square, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import { api, type ImportStatus } from "@/lib/api";
 import { exportImportResults } from "@/lib/exporters";
+import { cancelImport, restartImport } from "@/lib/importPipeline";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { EmptyState } from "@/components/app/EmptyState";
@@ -134,6 +135,24 @@ export default function ImportDetail() {
     onError: (e: any) => toast.error(e?.message ?? "Failed to create job"),
   });
 
+  const restartMut = useMutation({
+    mutationFn: () => restartImport(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["import", id] });
+      qc.invalidateQueries({ queryKey: ["importRows", id] });
+      qc.invalidateQueries({ queryKey: ["imports"] });
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+      toast.success("Import restarted");
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Restart failed"),
+  });
+
+  const handleStop = () => {
+    cancelImport(id);
+    toast.message("Stopping import…");
+    qc.invalidateQueries({ queryKey: ["import", id] });
+  };
+
   if (importQ.isLoading) {
     return <div className="p-6 max-w-[1600px] mx-auto"><p className="text-sm text-muted-foreground">Loading…</p></div>;
   }
@@ -162,6 +181,16 @@ export default function ImportDetail() {
         actions={
           <div className="flex items-center gap-2">
             <ImportStatusBadge status={imp.status} />
+            {imp.status === "processing" && (
+              <Button variant="outline" size="sm" onClick={handleStop}>
+                <Square className="h-4 w-4" /> Stop
+              </Button>
+            )}
+            {(imp.status === "completed" || imp.status === "failed") && (
+              <Button variant="outline" size="sm" disabled={restartMut.isPending} onClick={() => restartMut.mutate()}>
+                {restartMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />} Restart
+              </Button>
+            )}
             {imp.crawlJobId && (
               <Button variant="outline" size="sm" asChild>
                 <Link to={`/jobs/${imp.crawlJobId}`}><Briefcase className="h-4 w-4" /> View job</Link>
