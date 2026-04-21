@@ -212,6 +212,32 @@ export default function JobDetail() {
   }, [allContacts.data, contactsFilter]);
   const jobPeople = useMemo(() => (allPeople.data ?? []).filter((p) => p.jobId === id), [allPeople.data, id]);
 
+  type LogFilter = "all" | "done" | "errors" | "shutdown" | "resolver";
+  const [logFilter, setLogFilter] = useState<LogFilter>("all");
+  const matchLog = (l: any, f: LogFilter) => {
+    const ev = (l.metaJson ?? l.meta_json)?.event;
+    if (f === "done") return ev === "company_finished";
+    if (f === "errors") return l.level === "error" || l.level === "warn";
+    if (f === "shutdown") return /paused by user|stopped by user|resumed|shutdown|aborted/i.test(l.message ?? "");
+    if (f === "resolver") return ev === "resolve_started" || ev === "resolve_deferred" || ev === "resolve_completed";
+    return true;
+  };
+  const logCounts = useMemo(() => {
+    const list = (logs.data ?? []) as any[];
+    const c = { all: list.length, done: 0, errors: 0, shutdown: 0, resolver: 0 };
+    for (const l of list) {
+      if (matchLog(l, "done")) c.done++;
+      if (matchLog(l, "errors")) c.errors++;
+      if (matchLog(l, "shutdown")) c.shutdown++;
+      if (matchLog(l, "resolver")) c.resolver++;
+    }
+    return c;
+  }, [logs.data]);
+  const filteredLogs = useMemo(
+    () => ((logs.data ?? []) as any[]).filter((l) => matchLog(l, logFilter)),
+    [logs.data, logFilter],
+  );
+
   const updateStatus = useMutation({
     mutationFn: (s: JobStatus) => api.updateJobStatus(id, s),
     onSuccess: (_d, s) => {
