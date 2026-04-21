@@ -31,7 +31,31 @@ export default function JobDetail() {
 
   const job = useQuery({ queryKey: ["job", id], queryFn: () => api.getJob(id), refetchInterval: 2500 });
 
-  const [pendingAction, setPendingAction] = useState<{ kind: "pausing" | "stopping"; startedAt: number } | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ kind: "pausing" | "stopping"; startedAt: number; estimatedWaveMs: number } | null>(null);
+  const [, setTick] = useState(0);
+
+  // 1s tick to drive countdown re-renders while a pause/stop is pending
+  useEffect(() => {
+    if (!pendingAction) return;
+    const i = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(i);
+  }, [pendingAction]);
+
+  // Estimate wave duration from recent "company_finished" log entries
+  function estimateWaveMs(): number {
+    const rows = (logs.data ?? []) as any[];
+    const samples: number[] = [];
+    for (const r of rows) {
+      const meta = r?.meta ?? r?.meta_json;
+      if (meta?.event === "company_finished" && typeof meta.duration_ms === "number") {
+        samples.push(meta.duration_ms);
+        if (samples.length >= 10) break;
+      }
+    }
+    if (samples.length === 0) return 45000;
+    const max = Math.max(...samples);
+    return Math.min(60000, Math.max(5000, max));
+  }
 
   // Lightweight poll for the latest log row while a pause/stop is pending
   const latestLog = useQuery({
@@ -207,12 +231,12 @@ export default function JobDetail() {
               }
             }}><Play className="h-4 w-4" /> Start</Button>
             <Button variant="outline" size="sm" disabled={j.status !== "running" || !!pendingAction} onClick={() => {
-              setPendingAction({ kind: "pausing", startedAt: Date.now() });
+              setPendingAction({ kind: "pausing", startedAt: Date.now(), estimatedWaveMs: estimateWaveMs() });
               updateStatus.mutate("paused");
               toast("Pausing scraper — current batch will finish within ~45s");
             }}><Pause className="h-4 w-4" /> Pause</Button>
             <Button variant="outline" size="sm" disabled={j.status === "stopped" || !!pendingAction} onClick={() => {
-              setPendingAction({ kind: "stopping", startedAt: Date.now() });
+              setPendingAction({ kind: "stopping", startedAt: Date.now(), estimatedWaveMs: estimateWaveMs() });
               updateStatus.mutate("stopped");
               toast("Stopping scraper");
             }}><Square className="h-4 w-4" /> Stop</Button>
@@ -263,15 +287,22 @@ export default function JobDetail() {
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <JobStatusBadge status={j.status} />
-              {pendingAction && (
-                <span className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
-                  pendingAction.kind === "pausing" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground"
-                )}>
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  {pendingAction.kind === "pausing" ? "Pausing…" : "Stopping…"}
-                </span>
-              )}
+              {pendingAction && (() => {
+                const remainingMs = Math.max(0, pendingAction.estimatedWaveMs - (Date.now() - pendingAction.startedAt));
+                const secs = Math.ceil(remainingMs / 1000);
+                return (
+                  <span className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
+                    pendingAction.kind === "pausing" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground"
+                  )}>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {pendingAction.kind === "pausing" ? "Pausing…" : "Stopping…"}
+                    <span className="ml-1 tabular-nums opacity-80">
+                      {remainingMs > 0 ? `~${secs}s left` : "finishing up…"}
+                    </span>
+                  </span>
+                );
+              })()}
             </div>
             <span className="text-sm text-muted-foreground">{j.progress}% complete</span>
           </div>
@@ -330,9 +361,12 @@ export default function JobDetail() {
         )}>
           <Loader2 className={cn("h-4 w-4 animate-spin", pendingAction.kind === "pausing" ? "text-warning" : "text-muted-foreground")} />
           <span>
-            {pendingAction.kind === "pausing"
-              ? "Pausing scraper — waiting for the current batch to finish (up to ~45s)…"
-              : "Stopping scraper — waiting for the current batch to finish (up to ~45s)…"}
+            {(() => {
+              const remainingMs = Math.max(0, pendingAction.estimatedWaveMs - (Date.now() - pendingAction.startedAt));
+              const secs = Math.ceil(remainingMs / 1000);
+              const tail = remainingMs > 0 ? `current batch finishing (~${secs}s left)…` : "current batch finishing up…";
+              return pendingAction.kind === "pausing" ? `Pausing scraper — ${tail}` : `Stopping scraper — ${tail}`;
+            })()}
           </span>
         </div>
       ) : (j.status === "paused" || j.status === "stopped") && (
