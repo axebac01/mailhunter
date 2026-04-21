@@ -2,65 +2,73 @@
 
 ## Goal
 
-Add **Stop** and **Restart** controls to import jobs so users can cancel a running import and rerun a finished/failed one without re-uploading the file.
+Fix the crawl so it actually scrapes emails for uploaded jobs instead of finishing in 10 seconds with "1 company processed, 432 skipped (no domain)".
 
-## Current behavior
+## Root cause
 
-- An import runs client-side in `runImport` (`src/lib/importPipeline.ts`) as a batch loop. There's no cancellation hook, no resume path.
-- Once finished, the original `File` is gone — but every parsed row lives in `import_rows` with a `status` (`matched`, `not_found`, `failed`, …) and the unresolved `companies` already exist in the DB.
-- The Imports table (`src/pages/Imports.tsx`) only shows a delete (X) action per row.
+When you press **Run** on an uploaded job, two things happen in parallel:
 
-## Approach
+1. `resolve-domains-batch` starts resolving domains for ~430 companies — this takes several minutes.
+2. `scrape-emails-batch` is invoked immediately by `jobSimulator.maybeKickOffBatch`.
 
-### 1. Cancellation hook in the pipeline
+The scraper reads the companies *right now*, sees only **1** with a resolved `domain`, scrapes that one, then marks the job **completed / progress 100**. The other ~430 companies finish resolving minutes later but are never scraped — because the job is already "completed".
 
-In `src/lib/importPipeline.ts`:
+Evidence from this job (`0fe1d3f7…`):
+- `12:18:24` — log: *"Starting scrape: 1 companies with resolved domains, 432 skipped (no domain)"*
+- `12:18:32` — job marked `completed`, `companies_found = 1`
+- `12:42:47` and onward — resolver is still logging *"Resolved … → …"* for the same job's companies
 
-- Add a module-level `Map<string, { cancelled: boolean }>` keyed by `importId` (`importControllers`).
-- Add `export function cancelImport(importId: string)` that flips the flag and also marks the import as `failed` (with `error` note "Cancelled by user") via `api.updateImport`.
-- In `runImport`, register a controller right after `createImport`. Inside the batch loop (`for (const batch of batches)` and the streaming `iterate` callback), check `controller.cancelled` before each batch — if set, break out, flush a final `updateImport` with current counts and `status: "failed"`, then `return`.
-- Always remove the controller from the map in a `finally`.
+## Fix
 
-### 2. Restart pipeline (no file required)
+### 1. Make `scrape-emails-batch` wait for domain resolution to finish
 
-Add `export async function restartImport(importId: string, onProgress?)`:
+In `supabase/functions/scrape-emails-batch/index.ts`, before computing `todo`:
 
-- Load the import + all its `import_rows` via existing `api.listImportRows`.
-- Set the parent import back to `status: "processing"` and zero out the live counters (`processed_rows`, `matched_rows`, `failed_rows` reset; `total_rows` stays).
-- Process rows in batches of 2,000:
-  - For rows already `matched` or `duplicate` with a `matched_company_id` → keep as-is, count as matched.
-  - For everything else (`pending`, `not_found`, `failed`, `partial_match`, `processing`) → run them through the existing match phase using a synthetic `Norm` derived from the row's stored `company_name / country / website / industry / notes`, then update that `import_row` in place (`update import_rows set status, matched_company_id, matched_domain, error_message`).
-  - Insert any new companies the same way the normal pipeline does.
-- Reuse `processBatch`'s match/insert helpers by extracting the "match + insert companies + decide row status" portion into a shared `matchAndInsert(ctx, normalized)` function used by both fresh imports and restarts.
-- After the loop: re-enqueue `resolve-domains-batch` waves for the freshly inserted ids and the still-unresolved existing company ids attached to this import; mark import `completed`.
-- Honor the same cancellation controller as fresh imports.
+- Count how many of this job's companies still have `domain_status IN ('pending','resolving',NULL)` AND no `domain`.
+- If any are still pending, **don't mark the job completed**. Instead:
+  - Log: *"Waiting on domain resolution: N of M companies still pending."*
+  - Schedule a re-invocation of `scrape-emails-batch` after ~20s (using `EdgeRuntime.waitUntil` + `setTimeout` + `fetch` to itself), then return `202`.
+- Only proceed to `runPool` over the resolved subset once **all** companies are either `resolved` or `failed` (i.e. resolution is finished).
 
-### 3. UI: Stop & Restart buttons
+This turns the function into a self-polling loop that picks up the work as soon as the resolver catches up, without holding a single 150 s edge invocation open.
 
-In `src/pages/Imports.tsx` history table row (the `<TableCell>` that currently holds only the delete button):
+### 2. Scrape resolved companies in waves instead of waiting for *everything*
 
-- **Stop** (square icon): visible when `i.status === "processing"`. Calls `cancelImport(i.id)`, shows a toast "Stopping import…", invalidates the `imports` query.
-- **Restart** (rotate-cw icon): visible when `i.status === "completed" | "failed"`. Calls `restartImport(i.id, onProgress)` via a `useMutation`. While running, the button shows a small spinner and the row's status badge will flip to `processing` from the realtime/poll refresh.
-- Keep the existing **Delete** (X) button; disable it while the row is `processing`.
-- Wrap each action in `e.stopPropagation()` so the row click-through to detail still works elsewhere.
+Pure waiting is brittle on huge imports. Better: process in waves.
 
-Also surface the same two buttons on `src/pages/ImportDetail.tsx` next to the existing `ImportStatusBadge` in the `PageHeader` actions slot, so users on the detail page get the same controls.
+- On each invocation, pick companies for this job that have `domain IS NOT NULL` AND **haven't been scraped yet** (no `source_pages` row with `crawl_job_id = jobId` for that company, OR a new `companies.scrape_status` column — simpler: use a small `scraped_company_ids` set derived from `source_pages`).
+- Scrape that wave with the existing concurrency pool.
+- After the wave: if any companies for the job are still `pending/resolving`, re-invoke self in ~15 s and return. Otherwise mark `completed`.
 
-### 4. Progress for restarts
+This way the user sees contacts trickling in as domains resolve, instead of one burst at the end.
 
-Restarts emit progress through the same `onProgress` callback. Track active restarts in the existing `activeImports` registry so the in-page progress bar (when restarted from the Imports page) shows the same UI as a fresh import.
+### 3. Stop the premature "completed" status
+
+Remove the `update crawl_jobs set status='completed', progress=100` calls from the early-exit branches (`todo.length === 0`, no imports). Replace with the wait/re-invoke path above. Only set `completed` when **both** resolution is done AND every resolved company has been scraped.
+
+### 4. UI: clarify "Waiting on resolution" on the job timeline
+
+In `src/pages/JobDetail.tsx`, when the job is `running` and `domainStats` shows `unresolved > 0`, show a small banner under the progress bar:
+*"Resolving domains: X of Y done — scraping will start automatically."*
+
+This reuses the existing `domainStats` query (already polling every 5 s), no new endpoints.
+
+### 5. Recover the broken job
+
+Add a one-shot recovery: on `JobDetail` mount, if a job is `completed` but `companies_found < domainStats.resolved` AND `imports` exist, show a **"Resume scraping"** button that flips status back to `running` and re-invokes `scrape-emails-batch`. This lets the user fix the current `0fe1d3f7…` job (and any others stuck in the same state) with one click instead of starting over.
 
 ## Files to change
 
-- `src/lib/importPipeline.ts` — add `cancelImport`, `restartImport`, controller map, extract shared `matchAndInsert` helper, add cancellation checks in batch loop.
-- `src/pages/Imports.tsx` — add Stop / Restart buttons in history rows; wire mutations.
-- `src/pages/ImportDetail.tsx` — add Stop / Restart buttons in the page header.
+- `supabase/functions/scrape-emails-batch/index.ts` — wait/wave loop, self re-invocation, don't prematurely complete.
+- `src/lib/jobSimulator.ts` — no change needed (it already only invokes once; the re-invocation is server-side).
+- `src/pages/JobDetail.tsx` — "waiting on resolution" banner + "Resume scraping" recovery button.
 
 No DB migration. No new dependencies.
 
 ## Success criteria
 
-- Clicking **Stop** on a running import halts processing within one batch (≤ a few seconds), the row's status flips to `failed` with a "Cancelled by user" note, and resolver waves stop being enqueued.
-- Clicking **Restart** on a `completed` or `failed` import re-runs match + resolver against its stored rows, leaves already-matched rows untouched, and updates failed rows in place — no re-upload needed.
-- Buttons appear only in the relevant statuses and don't interfere with row-click navigation or delete.
+- Pressing **Run** on an uploaded job with 400+ companies eventually scrapes **every company that resolves a domain**, not just the handful resolved in the first 10 s.
+- The job stays in `running` state until both resolution and scraping are done; then it flips to `completed` with accurate `companies_found`.
+- The current stuck job (`Crawl: Målerier – test.xlsx`) can be resumed via the new button and processes the remaining ~155 resolved companies (and any that resolve afterwards).
+- Timeline shows a clear "Resolving domains: X/Y" status while the resolver is still working.
 
