@@ -1,10 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Upload, FileText, X, CheckCircle2, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { autoMap, parseFile, runImport, type Mapping, type ParsedFile } from "@/lib/importPipeline";
+import { autoMap, parseFile, runImport, checkLargeXlsx, type Mapping, type ParseResult } from "@/lib/importPipeline";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { EmptyState } from "@/components/app/EmptyState";
@@ -19,6 +19,10 @@ import { cn } from "@/lib/utils";
 
 const TARGET_FIELDS = ["company_name","country","website","industry","notes"] as const;
 
+// Module-level registry: keeps imports running across mount/unmount.
+type ActiveImport = { phase: string; p: number; t: number; startedAt: number };
+const activeImports: Map<string, ActiveImport> = (window as any).__activeImports ??= new Map();
+
 export default function Imports() {
   const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -28,22 +32,39 @@ export default function Imports() {
 
   const [dragOver, setDragOver] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const [parsed, setParsed] = useState<ParsedFile | null>(null);
+  const [parsed, setParsed] = useState<ParseResult | null>(null);
+  const [previewRows, setPreviewRows] = useState<string[][]>([]);
+  const [headers, setHeaders] = useState<string[]>([]);
   const [mapping, setMapping] = useState<Mapping>({});
   const [opts, setOpts] = useState({ ignoreDuplicates: true, overwriteEmpty: false, autoStart: false, attachJob: "none" });
   const [progress, setProgress] = useState<{ p: number; t: number; phase?: string; startedAt?: number } | null>(null);
+
+  useEffect(() => {
+    if (activeImports.size === 0) return;
+    const id = setInterval(() => qc.invalidateQueries({ queryKey: ["imports"] }), 2000);
+    return () => clearInterval(id);
+  }, [qc]);
 
   const handleFile = async (f: File) => {
     if (!/\.(csv|xls|xlsx)$/i.test(f.name)) {
       toast.error("Unsupported file type — please choose a CSV, XLS, or XLSX file");
       return;
     }
+    const warn = checkLargeXlsx(f);
+    if (warn.warn) toast.warning(warn.reason ?? "Large file");
     setFile(f);
+    setProgress({ p: 0, t: 0, phase: "reading", startedAt: Date.now() });
     try {
       const p = await parseFile(f);
+      const hdrs = p.kind === "buffered" ? p.parsed.headers : p.headers;
+      const preview = p.kind === "buffered" ? p.parsed.rows.slice(0, 10) : p.previewRows;
       setParsed(p);
-      setMapping(autoMap(p.headers));
+      setHeaders(hdrs);
+      setPreviewRows(preview);
+      setMapping(autoMap(hdrs));
+      setProgress(null);
     } catch (e: any) {
+      setProgress(null);
       toast.error(`Failed to parse: ${e.message ?? e}`);
     }
   };
@@ -63,11 +84,11 @@ export default function Imports() {
         overwriteEmpty: opts.overwriteEmpty,
         autoStart: opts.autoStart,
       },
-      onProgress: (p, t, phase) => setProgress((prev) => ({
-        p, t,
-        phase: phase ?? prev?.phase ?? "saving",
-        startedAt: prev?.startedAt ?? Date.now(),
-      })),
+      onProgress: (p, t, phase) => setProgress((prev) => {
+        const next = { p, t, phase: phase ?? prev?.phase ?? "saving", startedAt: prev?.startedAt ?? Date.now() };
+        if (file) activeImports.set(file.name, { phase: next.phase!, p, t, startedAt: next.startedAt! });
+        return next;
+      }),
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["imports"] });
@@ -75,10 +96,21 @@ export default function Imports() {
       qc.invalidateQueries({ queryKey: ["kpis"] });
       const elapsed = progress?.startedAt ? ((Date.now() - progress.startedAt) / 1000).toFixed(1) : null;
       toast.success(`Imported ${file?.name}${elapsed ? ` in ${elapsed}s` : ""}`);
-      setFile(null); setParsed(null); setMapping({}); setProgress(null);
+      if (file) activeImports.delete(file.name);
+      setFile(null); setParsed(null); setHeaders([]); setPreviewRows([]); setMapping({}); setProgress(null);
     },
-    onError: (e: any) => { toast.error(e.message ?? "Import failed"); setProgress(null); },
+    onError: (e: any) => {
+      if (file) activeImports.delete(file.name);
+      toast.error(e.message ?? "Import failed");
+      setProgress(null);
+    },
   });
+
+  useEffect(() => {
+    if (importMut.isPending && progress && progress.t > 50_000) {
+      toast.message("Large import — running in batches. You can leave this page; it'll keep going.", { id: "large-import-hint" });
+    }
+  }, [importMut.isPending, progress]);
 
   const del = useMutation({
     mutationFn: (id: string) => api.deleteImport(id),
@@ -115,9 +147,11 @@ export default function Imports() {
               <div className="flex items-center gap-2">
                 <FileText className="h-4 w-4 text-primary" />
                 <span className="text-sm font-medium">{file.name}</span>
-                <span className="text-xs text-muted-foreground">{parsed?.rows.length ?? 0} rows</span>
+                <span className="text-xs text-muted-foreground">
+                  {parsed?.kind === "buffered" ? `${parsed.parsed.rows.length} rows` : parsed?.kind === "stream" ? "streaming" : ""}
+                </span>
               </div>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setFile(null); setParsed(null); setMapping({}); }}><X className="h-4 w-4" /></Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setFile(null); setParsed(null); setHeaders([]); setPreviewRows([]); setMapping({}); }}><X className="h-4 w-4" /></Button>
             </div>
           )}
 
@@ -160,11 +194,11 @@ export default function Imports() {
         </SectionCard>
       </div>
 
-      {parsed && parsed.headers.length > 0 && (
+      {parsed && headers.length > 0 && (
         <>
           <SectionCard title="Column mapping" description="Map source columns to target fields" className="mb-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {parsed.headers.map((h) => (
+              {headers.map((h) => (
                 <div key={h} className="flex items-center gap-3 p-3 rounded-md border border-border">
                   <div className="flex-1 min-w-0">
                     <p className="text-xs text-muted-foreground">Source column</p>
@@ -182,7 +216,7 @@ export default function Imports() {
               ))}
             </div>
             <div className="flex justify-end mt-4 gap-2">
-              <Button variant="outline" onClick={() => { setFile(null); setParsed(null); setMapping({}); }}>Cancel</Button>
+              <Button variant="outline" onClick={() => { setFile(null); setParsed(null); setHeaders([]); setPreviewRows([]); setMapping({}); }}>Cancel</Button>
               <Button onClick={() => importMut.mutate()} disabled={importMut.isPending}>
                 <CheckCircle2 className="h-4 w-4" /> {importMut.isPending ? "Running…" : "Run import"}
               </Button>
@@ -192,9 +226,9 @@ export default function Imports() {
           <SectionCard title="Preview" description="First 10 rows" noPadding className="mb-6">
             <div className="overflow-auto">
               <Table>
-                <TableHeader><TableRow>{parsed.headers.map((h) => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader>
+                <TableHeader><TableRow>{headers.map((h) => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader>
                 <TableBody>
-                  {parsed.rows.slice(0, 10).map((r, i) => (
+                  {previewRows.slice(0, 10).map((r, i) => (
                     <TableRow key={i}>{r.map((cell, j) => <TableCell key={j} className="text-sm">{cell}</TableCell>)}</TableRow>
                   ))}
                 </TableBody>
