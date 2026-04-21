@@ -31,7 +31,31 @@ export default function JobDetail() {
 
   const job = useQuery({ queryKey: ["job", id], queryFn: () => api.getJob(id), refetchInterval: 2500 });
 
-  const [pendingAction, setPendingAction] = useState<{ kind: "pausing" | "stopping"; startedAt: number } | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ kind: "pausing" | "stopping"; startedAt: number; estimatedWaveMs: number } | null>(null);
+  const [, setTick] = useState(0);
+
+  // 1s tick to drive countdown re-renders while a pause/stop is pending
+  useEffect(() => {
+    if (!pendingAction) return;
+    const i = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(i);
+  }, [pendingAction]);
+
+  // Estimate wave duration from recent "company_finished" log entries
+  function estimateWaveMs(): number {
+    const rows = (logs.data ?? []) as any[];
+    const samples: number[] = [];
+    for (const r of rows) {
+      const meta = r?.meta ?? r?.meta_json;
+      if (meta?.event === "company_finished" && typeof meta.duration_ms === "number") {
+        samples.push(meta.duration_ms);
+        if (samples.length >= 10) break;
+      }
+    }
+    if (samples.length === 0) return 45000;
+    const max = Math.max(...samples);
+    return Math.min(60000, Math.max(5000, max));
+  }
 
   // Lightweight poll for the latest log row while a pause/stop is pending
   const latestLog = useQuery({
