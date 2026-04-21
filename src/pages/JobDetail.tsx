@@ -546,5 +546,6 @@ function JobTimeline({ jobId }: { jobId: string }) {
         )}
       </div>
     </SectionCard>
+    </div>
   );
 }
