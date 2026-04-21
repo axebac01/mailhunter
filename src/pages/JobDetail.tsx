@@ -152,6 +152,11 @@ export default function JobDetail() {
                 <Search className="h-4 w-4" /> Retry failed ({domainStats.data?.failed})
               </Button>
             )}
+            {j.sourceType === "uploaded" && (domainStats.data?.total ?? 0) > 0 && (
+              <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate({ reresolveAll: true })} disabled={resolveDomains.isPending}>
+                <Search className="h-4 w-4" /> Re-resolve all
+              </Button>
+            )}
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
