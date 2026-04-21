@@ -272,7 +272,7 @@ export default function Imports() {
                 <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Processed</TableHead>
                 <TableHead className="text-right">Matched</TableHead><TableHead className="text-right">Failed</TableHead>
                 <TableHead className="text-right">Contacts</TableHead><TableHead className="text-right">People</TableHead>
-                <TableHead className="w-24" />
+                <TableHead className="w-40" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -288,7 +288,37 @@ export default function Imports() {
                   <TableCell className="text-right tabular-nums">{fmtNum(i.contactsFound)}</TableCell>
                   <TableCell className="text-right tabular-nums">{fmtNum(i.peopleFound)}</TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => del.mutate(i.id)}><X className="h-4 w-4" /></Button>
+                    <div className="flex items-center justify-end gap-1">
+                      {i.status === "processing" && (
+                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Stop import" onClick={() => stopImport(i.id)}>
+                          <Square className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {(i.status === "completed" || i.status === "failed") && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          title="Restart import"
+                          disabled={restartMut.isPending && restartMut.variables === i.id}
+                          onClick={() => restartMut.mutate(i.id)}
+                        >
+                          {restartMut.isPending && restartMut.variables === i.id
+                            ? <Loader2 className="h-4 w-4 animate-spin" />
+                            : <RotateCw className="h-4 w-4" />}
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        title="Delete import"
+                        disabled={i.status === "processing"}
+                        onClick={() => del.mutate(i.id)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
