@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe, Trash2, Search } from "lucide-react";
+import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe, Trash2, Search, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { api, type JobStatus } from "@/lib/api";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
@@ -19,6 +19,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { fmtDateTime, fmtRelative, fmtNum } from "@/lib/format";
+import { TimelineEvent, type TimelineEventType } from "@/components/app/TimelineEvent";
+import { supabase } from "@/integrations/supabase/client";
+import { cn } from "@/lib/utils";
 
 export default function JobDetail() {
   const { id = "" } = useParams<{ id: string }>();
