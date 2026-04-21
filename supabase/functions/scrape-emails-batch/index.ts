@@ -4,7 +4,8 @@
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 
-const CONCURRENCY = 3;
+const CONCURRENCY = 6;
+const PER_COMPANY_TIMEOUT_MS = 45_000;
 
 async function runPool<T>(items: T[], worker: (i: T) => Promise<void>, n: number): Promise<void> {
   let idx = 0;
