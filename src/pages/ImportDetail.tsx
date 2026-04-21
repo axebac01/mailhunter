@@ -181,6 +181,16 @@ export default function ImportDetail() {
         actions={
           <div className="flex items-center gap-2">
             <ImportStatusBadge status={imp.status} />
+            {imp.status === "processing" && (
+              <Button variant="outline" size="sm" onClick={handleStop}>
+                <Square className="h-4 w-4" /> Stop
+              </Button>
+            )}
+            {(imp.status === "completed" || imp.status === "failed") && (
+              <Button variant="outline" size="sm" disabled={restartMut.isPending} onClick={() => restartMut.mutate()}>
+                {restartMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />} Restart
+              </Button>
+            )}
             {imp.crawlJobId && (
               <Button variant="outline" size="sm" asChild>
                 <Link to={`/jobs/${imp.crawlJobId}`}><Briefcase className="h-4 w-4" /> View job</Link>
