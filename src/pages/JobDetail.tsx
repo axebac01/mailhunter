@@ -361,9 +361,12 @@ export default function JobDetail() {
         )}>
           <Loader2 className={cn("h-4 w-4 animate-spin", pendingAction.kind === "pausing" ? "text-warning" : "text-muted-foreground")} />
           <span>
-            {pendingAction.kind === "pausing"
-              ? "Pausing scraper — waiting for the current batch to finish (up to ~45s)…"
-              : "Stopping scraper — waiting for the current batch to finish (up to ~45s)…"}
+            {(() => {
+              const remainingMs = Math.max(0, pendingAction.estimatedWaveMs - (Date.now() - pendingAction.startedAt));
+              const secs = Math.ceil(remainingMs / 1000);
+              const tail = remainingMs > 0 ? `current batch finishing (~${secs}s left)…` : "current batch finishing up…";
+              return pendingAction.kind === "pausing" ? `Pausing scraper — ${tail}` : `Stopping scraper — ${tail}`;
+            })()}
           </span>
         </div>
       ) : (j.status === "paused" || j.status === "stopped") && (
