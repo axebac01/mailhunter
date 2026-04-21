@@ -244,7 +244,7 @@ export default function JobDetail() {
       </div>
 
       {j.sourceType === "uploaded" && domainStats.data && (
-        <div className="mb-6 rounded-md border border-border bg-card px-4 py-3 text-sm flex flex-wrap items-center gap-x-6 gap-y-1">
+        <div className="mb-3 rounded-md border border-border bg-card px-4 py-3 text-sm flex flex-wrap items-center gap-x-6 gap-y-1">
           <span className="font-medium">Domain resolution</span>
           <span className="text-muted-foreground">{domainStats.data.total} companies</span>
           <span className="text-success">✓ {domainStats.data.resolved} resolved</span>
@@ -253,6 +253,27 @@ export default function JobDetail() {
           {domainStats.data.failed > 0 && (
             <span className="text-xs text-muted-foreground ml-auto">Companies without a real domain are skipped — no fake emails are generated.</span>
           )}
+        </div>
+      )}
+
+      {j.sourceType === "uploaded" && j.status === "running" && domainStats.data && domainStats.data.unresolved > 0 && (
+        <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin text-warning" />
+          <span>Resolving domains: {domainStats.data.resolved} of {domainStats.data.total} done — scraping continues automatically as domains resolve.</span>
+        </div>
+      )}
+
+      {j.sourceType === "uploaded" && j.status === "completed" && domainStats.data &&
+       (j.companiesFound < domainStats.data.resolved || domainStats.data.unresolved > 0) && (
+        <div className="mb-6 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm flex items-center justify-between gap-2">
+          <span>
+            This job finished early: {j.companiesFound} scraped but {domainStats.data.resolved} have resolved domains
+            {domainStats.data.unresolved > 0 ? ` (${domainStats.data.unresolved} still resolving)` : ""}.
+          </span>
+          <Button size="sm" variant="outline" onClick={() => resumeScraping.mutate()} disabled={resumeScraping.isPending}>
+            {resumeScraping.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+            Resume scraping
+          </Button>
         </div>
       )}
 
