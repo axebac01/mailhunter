@@ -280,11 +280,22 @@ Deno.serve(async (req) => {
       if (jobId) supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level, message, meta_json: meta ?? null }).then(() => {});
     };
 
+    // Look up company name once for richer timeline events
+    const { data: companyRow } = await supabase.from("companies").select("name").eq("id", companyId).maybeSingle();
+    const companyName = companyRow?.name ?? domain;
+
     const root = rootDomain(domain);
 
     // 1) Discover pages
     let pages = await discoverPages(domain, apiKey);
-    log("info", `Discovered ${pages.length} pages on ${domain}`);
+    log("info", `Discovered ${pages.length} pages on ${domain}`, {
+      event: "pages_discovered",
+      company: companyName,
+      company_id: companyId,
+      host: domain,
+      count: pages.length,
+      urls: pages.slice(0, 10),
+    });
 
     // 2) Scrape initial pages in parallel
     const teamPagePrompt = "Extract all named individuals (employees, founders, staff, board members) with their role and email if visible. Return JSON: { people: [{ full_name, role_title, department, email }] }. Only include real people, not testimonials.";
@@ -384,6 +395,17 @@ Deno.serve(async (req) => {
         page_type: classifyPage(r.url),
         status_code: 200,
         extracted_summary: `${emails.size} emails, ${phoneCandidates.length} phone candidates, ${ppl.length} people`,
+      });
+
+      // Timeline: page crawled
+      log("info", `Crawled ${r.url} — ${emails.size} email${emails.size === 1 ? "" : "s"}`, {
+        event: "page_crawled",
+        company: companyName,
+        company_id: companyId,
+        url: r.url,
+        page_type: classifyPage(r.url),
+        emails_on_page: emails.size,
+        people_on_page: ppl.length,
       });
     }
 
@@ -492,6 +514,36 @@ Deno.serve(async (req) => {
 
     // 9) MX provider (logged only)
     const mx = await detectMxProvider(root);
+
+    // Timeline: emails_found
+    if (inserted.contacts > 0) {
+      const personSamples = Array.from(foundEmails).filter((e) => {
+        const c = classifyEmail(e);
+        return c === "person_high" || c === "person_low";
+      }).slice(0, 3);
+      const genericSamples = Array.from(foundEmails).filter((e) => classifyEmail(e) === "generic").slice(0, 3);
+      log("success", `Found ${foundEmails.size} email${foundEmails.size === 1 ? "" : "s"} on ${domain}`, {
+        event: "emails_found",
+        company: companyName,
+        company_id: companyId,
+        host: domain,
+        person_emails: inserted.person_emails,
+        generic_emails: inserted.contacts - inserted.person_emails - foundPhones.size - foundForms.size,
+        synthesized: inserted.synthesized,
+        samples: [...personSamples, ...genericSamples].slice(0, 3),
+      });
+    }
+
+    // Timeline: people_extracted
+    if (inserted.people > 0) {
+      log("success", `Extracted ${inserted.people} ${inserted.people === 1 ? "person" : "people"} from ${companyName}`, {
+        event: "people_extracted",
+        company: companyName,
+        company_id: companyId,
+        count: inserted.people,
+        samples: dedupPeople.slice(0, 3).map((p) => ({ name: p.full_name, role: p.role_title ?? null })),
+      });
+    }
 
     const summary = {
       domain, pages: pages.length,
