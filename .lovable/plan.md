@@ -2,48 +2,52 @@
 
 ## Goal
 
-Make the existing Pause / Stop buttons on the JobDetail page actually halt the running `scrape-emails-batch` worker promptly, and give clear visual feedback that scraping has been paused.
-
-## Current behavior
-
-- `JobDetail.tsx` already has **Start / Pause / Stop** buttons that call `api.updateJobStatus(id, …)`.
-- `scrape-emails-batch` checks `job.status !== "running"` at the **top of each invocation** and exits early. The self re-invoke loop (every ~15 s) will therefore stop **on its next tick** after a pause/stop.
-- Gap: the **currently in-flight wave** (up to ~6 companies in the concurrency pool) keeps running for up to ~45 s after the user clicks Pause, with no UI indication that a stop was requested.
+Give users immediate visual feedback when they click **Pause** or **Stop** on a running scrape job, instead of just waiting for the status badge to flip. Show a transient "Pausing…" / "Stopping…" intermediate state until the worker actually halts (status reaches `paused` / `stopped` AND the in-flight wave has finished).
 
 ## Approach
 
-### 1. Cooperative cancellation inside the scrape worker
+All changes are local to `src/pages/JobDetail.tsx` — no edge function or DB changes.
 
-In `supabase/functions/scrape-emails-batch/index.ts`:
+### 1. Track local "intent" state
 
-- Before each company in `runPool`'s worker, re-check `crawl_jobs.status` (cheap single-row select, cached for ~3 s to avoid hammering). If status is no longer `running`, the worker returns immediately without scraping that company.
-- After the wave finishes (or aborts), if status is not `running`, log `"Scraping paused by user"` (or `"stopped"`) and **do not** schedule a re-invoke.
-- Skip the "mark completed" branch when the exit reason is a user pause/stop — leave status as the user set it.
+Add `const [pendingAction, setPendingAction] = useState<"pausing" | "stopping" | null>(null);`
 
-### 2. JobDetail UI feedback
+- When user clicks **Pause** → `setPendingAction("pausing")`, then call `api.updateJobStatus(id, "paused")`.
+- When user clicks **Stop** → `setPendingAction("stopping")`, then call `api.updateJobStatus(id, "stopped")`.
+- Clear `pendingAction` when:
+  - The polled job status reaches the requested terminal state (`paused` / `stopped`) **AND** the most recent `crawl_logs` entry for the job confirms the wave exited (look for the `"Scraping paused/stopped by user after wave"` log line the worker already writes), OR
+  - A safety timeout of 60 s elapses (so the UI never sticks).
 
-In `src/pages/JobDetail.tsx`:
+### 2. Reflect intent in the UI
 
-- Wire the existing **Pause** and **Stop** buttons to also show a toast: *"Pausing scraper — current batch will finish within ~45s"* / *"Stopping scraper"*.
-- Disable **Pause** / **Stop** when `j.status` is already `paused` / `stopped`. Disable **Start** when `running`.
-- Add a small banner above the progress bar when `j.status === "paused"` or `"stopped"`:
-  - Paused: amber, *"Scraper paused. Click Start to resume from where it left off."*
-  - Stopped: neutral, *"Scraper stopped."*
-- When the user hits **Start** after a pause/stop, re-invoke `scrape-emails-batch` (same call as the existing **Resume scraping** mutation) so work resumes immediately instead of waiting for the next natural tick.
+While `pendingAction` is set:
 
-### 3. No DB or schema changes
+- **Status badge area**: render an inline pill next to the existing badge — amber spinner + "Pausing…" or neutral spinner + "Stopping…".
+- **Banner above progress bar**: replace the existing paused/stopped banner with an "in-flight" variant:
+  - Pausing: *"Pausing scraper — waiting for the current batch to finish (up to ~45 s)…"* with a small spinner.
+  - Stopping: *"Stopping scraper — waiting for the current batch to finish (up to ~45 s)…"*
+- **Buttons**: disable **Start / Pause / Stop** entirely while `pendingAction !== null` so the user can't issue conflicting commands mid-transition.
+- Toasts already exist from the previous change; keep them as the immediate "click acknowledged" cue.
 
-Status transitions already exist (`running` / `paused` / `stopped` / `completed`). No migration needed.
+### 3. Detect worker exit cleanly
+
+Use the existing `crawl_logs` query (already polling) — find the latest log entry for this job; if its `message` contains `"paused by user"` or `"stopped by user"` and its `created_at` is after the click timestamp stored alongside `pendingAction`, treat the worker as exited and clear the pending state.
+
+If `crawl_logs` isn't already queried on this page, add a lightweight 3 s poll for just the latest log row (`limit 1, order by created_at desc`) gated on `pendingAction !== null`, so it only runs during the transition.
+
+### 4. Edge cases
+
+- If the user hits **Start** quickly after pausing/stopping (once buttons re-enable on terminal state), the existing resume flow runs unchanged.
+- If polling times out (60 s) without seeing the exit log, clear `pendingAction`, switch to the regular paused/stopped banner, and toast *"Worker may still be finishing — refresh in a moment if needed."*
 
 ## Files to change
 
-- `supabase/functions/scrape-emails-batch/index.ts` — per-item status re-check, skip re-invoke on pause/stop, log pause reason.
-- `src/pages/JobDetail.tsx` — toasts on Pause/Stop, disabled states, paused/stopped banner, re-invoke scraper on Start.
+- `src/pages/JobDetail.tsx` — add `pendingAction` state, transition banner + pill, button disabling, latest-log poll for exit detection, 60 s safety timeout.
 
 ## Success criteria
 
-- Clicking **Pause** while scraping flips status to `paused` within ~1 s; the in-flight wave finishes (or aborts per-company) within ≤ a few seconds; no further re-invocations occur.
-- Clicking **Start** on a paused job resumes scraping immediately (no need to wait 15 s).
-- The banner clearly tells the user the scraper is paused or stopped.
-- **Stop** behaves identically to Pause but uses the `stopped` status and label.
+- Clicking **Pause** instantly shows a "Pausing…" pill + banner with spinner; it persists until the worker logs its exit (typically a few seconds, up to ~45 s), then flips to the regular "Scraper paused" banner.
+- Same behavior for **Stop**.
+- Start / Pause / Stop buttons are disabled during the transition so the user can't double-click.
+- No backend changes; relies on existing worker exit log lines.
 
