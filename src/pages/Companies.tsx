@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, Building2 } from "lucide-react";
+import { Search, Building2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { downloadRows } from "@/lib/exporters";
@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtDate, fmtRelative } from "@/lib/format";
 import { Skeleton } from "@/components/ui/skeleton";
+import { supabase } from "@/integrations/supabase/client";
 
 export default function Companies() {
   const navigate = useNavigate();
@@ -95,6 +96,7 @@ export default function Companies() {
                   <TableHead>Source</TableHead><TableHead>Created</TableHead>
                   <TableHead className="text-right">Contacts</TableHead><TableHead className="text-right">People</TableHead>
                   <TableHead>Updated</TableHead>
+                  <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -110,6 +112,30 @@ export default function Companies() {
                     <TableCell className="text-right tabular-nums">{counts.c.get(c.id) ?? 0}</TableCell>
                     <TableCell className="text-right tabular-nums">{counts.p.get(c.id) ?? 0}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{fmtRelative(c.updatedAt)}</TableCell>
+                    <TableCell className="text-right">
+                      {c.domain && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive h-7 px-2"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const wrongHost = c.domain!;
+                            try {
+                              await supabase.from("domain_blocklist").insert({ company_id: c.id, host: wrongHost, reason: "user marked wrong" } as any);
+                              await supabase.from("companies").update({ domain: null, website: null, source_url: null, domain_status: "failed" }).eq("id", c.id);
+                              toast.success(`Marked ${wrongHost} as wrong — re-resolve to find a better one.`);
+                              qc.invalidateQueries({ queryKey: ["companies"] });
+                            } catch (err: any) {
+                              toast.error(err?.message ?? "Failed to mark wrong");
+                            }
+                          }}
+                          title="Mark this domain as incorrect"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
