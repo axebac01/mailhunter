@@ -2,47 +2,65 @@
 
 ## Goal
 
-Show live progress for running jobs directly in the Jobs table row — a thin progress bar plus three counters (companies processed, contacts found, pages crawled) that update in real time without manual refresh.
+Significantly improve the domain-resolution hit rate for batch jobs. Currently 977/1456 companies are unresolved and 136 failed (most are small Swedish companies with `AB`/`Aktiebolag` suffixes and Nordic characters). Three problems compound:
 
-## Approach
+1. The **company `country` field is empty** — we never apply country-TLD bonuses or country-localized searches, even though the parent job has `country = "Sweden"`.
+2. The **search query is noisy** (legal suffixes like `AB`, `Aktiebolag` are sent to Firecrawl) and **only one query is tried** — no fallback if the first attempt returns Wikipedia/LinkedIn-only results.
+3. **No way to retry only failed companies** — failures stick.
 
-### 1. Realtime subscription on `crawl_jobs`
-In `src/pages/Jobs.tsx`, add a `useEffect` that subscribes to Postgres changes on `public.crawl_jobs` (UPDATE events). On each change, update the React Query cache for `["jobs"]` so the row re-renders with fresh `progress`, `companies_found`, `contacts_found`, and `pages_crawled` values.
+## Changes
 
-Requires a one-line migration to enable realtime on the table:
-```sql
-ALTER PUBLICATION supabase_realtime ADD TABLE public.crawl_jobs;
-ALTER TABLE public.crawl_jobs REPLICA IDENTITY FULL;
-```
+### 1. Inherit country from the parent job (`resolve-domains-batch`)
 
-### 2. Inline progress UI in the table row
-Replace the single static "Companies / Contacts" cells with a richer block that, **for active jobs only** (`running`, `scheduled`, `paused`), shows:
-- A thin `ProgressBar` (already exists at `src/components/app/ProgressBar.tsx`) bound to `j.progress`
-- Three compact counters underneath: `Companies {processed}/{max}` · `Contacts {n}` · `Pages {n}`
+When called with `jobId` or `importId`, fetch the parent `crawl_jobs.country` once and pass it into `resolveOne` for any company whose own `country` is null. Also persist it back to `companies.country` so the country shows in the UI and downstream features benefit.
 
-For non-active jobs (completed/failed/draft/stopped), keep the existing right-aligned numeric cells unchanged.
+### 2. Cleaner search query + name normalization
 
-### 3. Layout adjustment
-Merge the current "Companies" and "Contacts" right-aligned columns into a single wider "Progress" column so the bar + counters fit cleanly. Add a "Pages" value inline rather than a new column to avoid horizontal overflow.
+- Strip legal-form suffixes (`AB`, `Aktiebolag`, `Oy`, `GmbH`, `Ltd`, `Inc`, `LLC`, `SA`, `SpA`, `PLC`, `BV`, `AS`, `ApS`) from the query string itself, not just from token scoring.
+- Build two normalized name variants: original (with diacritics) and ASCII-folded (`ö→o`, `å→a`). Search both — many Swedish domains drop accents (e.g. `osterlenportens.se` for `Österlenportens`).
+- Pass `country` and `lang` hints to Firecrawl Search (`country: "se"`, `lang: "sv"` for Sweden, etc.) for more relevant results.
 
-```text
-| Job name | Industry | Country | Status | Created | Last run | Schedule | Progress                              | ⋮ |
-|          |          |         | running|         |          |          | ▓▓▓▓▓░░░ 62%                          |   |
-|          |          |         |        |         |          |          | 124/200 companies · 38 contacts · 154 pages |
-```
+### 3. Two-pass search with fallback queries
 
-### 4. Same treatment on Dashboard "Recent jobs"
-Optional small touch: the existing Recent jobs list on `Dashboard.tsx` already benefits from the realtime cache invalidation automatically — no extra UI change required, but the badge/timestamps will refresh live.
+Per company, try queries in order until a candidate scores ≥ 4:
+1. `"<clean name>" <country> kontakt` (Swedish: "kontakt", DE: "kontakt", etc. — country-aware "contact" word biases toward homepages)
+2. `<clean name> <country>` (no quotes — broader)
+3. `<clean name> hemsida` / `website` (last resort)
+
+Stop early as soon as a high-confidence (score ≥ 5) candidate appears. This adds latency only for hard cases.
+
+### 4. Looser verification
+
+- Currently `verifyHomepage` requires a name token to appear in `<title>` or `og:site_name`. Many small business sites only have a logo image or use a tagline as title. Loosen by also checking:
+  - any `<meta name="description">` content
+  - the `<h1>` text
+  - the domain itself already contains a name token (skip verification entirely if so)
+- If verification fails but the candidate's domain stripped of TLD is an exact match for any name token (e.g. `osterlenportens.se` ↔ token `österlenportens` after folding), accept it.
+
+### 5. Retry-only-failed mode
+
+Add a new request flag `{ jobId, retryFailed: true }` to `resolve-domains-batch`. When set, it processes companies where `domain_status = 'failed'` (instead of skipping non-null-domain companies). Wire a second button "Retry failed" on the Job Detail page next to the existing "Resolve domains" button, shown only when `domainStats.failed > 0`.
+
+### 6. Slightly higher concurrency + better logging
+
+- Bump `CONCURRENCY` from 5 → 8 (Firecrawl handles this comfortably for search calls).
+- Per-company `crawl_logs` entries for failures with the queries tried and top candidate (helps debug).
+
+### 7. Apply same improvements to single-shot `resolve-domain`
+
+Mirror the cleaner-query, fallback-search, and looser-verification logic in `supabase/functions/resolve-domain/index.ts` so the "Resolve" button on the Companies page benefits too.
 
 ## Files to change
 
-- `supabase/migrations/<new>.sql` — enable realtime on `crawl_jobs`
-- `src/pages/Jobs.tsx` — add realtime subscription, replace Companies/Contacts cells with Progress cell
-- (no changes needed to `ProgressBar.tsx` — reused as-is)
+- `supabase/functions/resolve-domains-batch/index.ts` — country inheritance, query cleanup + fallbacks, looser verification, retry-failed mode, concurrency bump
+- `supabase/functions/resolve-domain/index.ts` — same query/verification improvements
+- `src/pages/JobDetail.tsx` — add "Retry failed" button passing `{ jobId, retryFailed: true }`
+
+No DB migration required.
 
 ## Success criteria
 
-- Start a job → its row in `/jobs` shows a moving progress bar and counters incrementing every few seconds with no page refresh
-- Completed/draft/failed jobs keep showing final numeric totals as today
-- No extra polling; updates come purely from Supabase Realtime
+- Re-running resolution on job `5f6d2017…` resolves a meaningful chunk of the 977 unresolved + "Retry failed" recovers a significant portion of the 136 failed companies.
+- Logs show which query variant succeeded for each company, making future tuning easier.
+- New jobs created with a country set on the job inherit that country automatically.
 
