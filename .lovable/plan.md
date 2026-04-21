@@ -2,65 +2,109 @@
 
 ## Goal
 
-Significantly improve the domain-resolution hit rate for batch jobs. Currently 977/1456 companies are unresolved and 136 failed (most are small Swedish companies with `AB`/`Aktiebolag` suffixes and Nordic characters). Three problems compound:
+Take the import → domain resolution flow from "decent" to **world-class**: dramatically higher hit rate (target 80%+ on Nordic SMB lists like the current Behandlingshem job), fewer wrong domains, and clearer recovery paths.
 
-1. The **company `country` field is empty** — we never apply country-TLD bonuses or country-localized searches, even though the parent job has `country = "Sweden"`.
-2. The **search query is noisy** (legal suffixes like `AB`, `Aktiebolag` are sent to Firecrawl) and **only one query is tried** — no fallback if the first attempt returns Wikipedia/LinkedIn-only results.
-3. **No way to retry only failed companies** — failures stick.
+## Root causes observed
+
+Looking at the current 977 unresolved + 102 failed companies on job `5f6d2017…`:
+
+1. **Country signal is missing end-to-end.** The `crawl_jobs.country` for that job is `NULL` — so inheritance does nothing, and the search query becomes `"Edetstens Behandlingshem" official website` with no Sweden hint, no `.se` TLD bias, no `sv` lang to Firecrawl. Most Nordic SMB sites only rank well on `google.se`.
+2. **Country isn't captured during job/import creation.** The Create Job form lets you upload a file *and* set a country, but the country isn't propagated when no country column is mapped, and it isn't backfilled onto already-imported companies.
+3. **Name-only dedup is too aggressive.** `ilike "<name>"` reuses any prior company with that exact name even if its previous resolution failed and was never retried — those 937 unresolved are mostly old shells.
+4. **Single-source candidates.** We only use Firecrawl `/search`. We never try **Firecrawl `/map`** on guessed homepages (`<slug>.se`, `<slug>.com`), which would catch the 30–40% of small businesses whose own site doesn't rank in the top 10 search results.
+5. **Verification scrapes `/` only.** Many small business homepages are SPAs / image-only / redirect chains. We reject good candidates because no name token appears in the rendered HTML.
+6. **No tiebreaker for ambiguous cases.** When two candidates score equally we pick arbitrarily; Lovable AI Gateway can pick the right one almost for free.
+7. **No learning loop.** A wrong domain accepted once stays wrong forever; users can't easily mark a domain wrong and trigger a re-resolve.
 
 ## Changes
 
-### 1. Inherit country from the parent job (`resolve-domains-batch`)
+### 1. Capture & propagate country aggressively (frontend + edge function)
 
-When called with `jobId` or `importId`, fetch the parent `crawl_jobs.country` once and pass it into `resolveOne` for any company whose own `country` is null. Also persist it back to `companies.country` so the country shows in the UI and downstream features benefit.
+- **`CreateJob.tsx` / import pipeline**: when the user picks a country on the job form, write it onto every newly-created `companies` row in `runImport` (not just when the CSV has a country column). Also set it on the parent `crawl_jobs` row (already does this — verify).
+- **`resolve-domains-batch`**: at the start of a `jobId` run, if `crawl_jobs.country` is set, **UPDATE all companies for that job that have null country to the job's country** in one statement, then proceed.
+- **Country normalization map** (server + client): accept "SE", "Sverige", "Sweden", swedish flag emoji, etc., and normalize to the canonical key used in `COUNTRY_HINTS`.
 
-### 2. Cleaner search query + name normalization
+### 2. Smarter dedup during import
 
-- Strip legal-form suffixes (`AB`, `Aktiebolag`, `Oy`, `GmbH`, `Ltd`, `Inc`, `LLC`, `SA`, `SpA`, `PLC`, `BV`, `AS`, `ApS`) from the query string itself, not just from token scoring.
-- Build two normalized name variants: original (with diacritics) and ASCII-folded (`ö→o`, `å→a`). Search both — many Swedish domains drop accents (e.g. `osterlenportens.se` for `Österlenportens`).
-- Pass `country` and `lang` hints to Firecrawl Search (`country: "se"`, `lang: "sv"` for Sweden, etc.) for more relevant results.
+- Change the name-only dedup in `runImport` from `ilike "<name>"` to a **scoped lookup**: only reuse an existing company if `(name ILIKE x AND (country = importCountry OR country IS NULL) AND domain_status = 'resolved')`. Otherwise create a new row. This stops 937 unresolved shells from being silently re-attached.
+- Add a `created_by_job_id` (column already exists, currently unused) when a company is freshly created, so we can scope retries.
 
-### 3. Two-pass search with fallback queries
+### 3. Multi-source candidate generation in `resolveOne`
 
-Per company, try queries in order until a candidate scores ≥ 4:
-1. `"<clean name>" <country> kontakt` (Swedish: "kontakt", DE: "kontakt", etc. — country-aware "contact" word biases toward homepages)
-2. `<clean name> <country>` (no quotes — broader)
-3. `<clean name> hemsida` / `website` (last resort)
+Instead of search-only, generate candidates from **three sources in parallel**, then merge & rank:
 
-Stop early as soon as a high-confidence (score ≥ 5) candidate appears. This adds latency only for hard cases.
+1. **Firecrawl `/search`** — current behavior, but with the cleaner queries already in place plus one new query: `site:.<tld> "<cleanName>"` when a country TLD is known (e.g., `site:.se "Edetstens Behandlingshem"`).
+2. **Slug-based homepage probes** — build 4–6 candidate hostnames from the cleaned name:
+   - `<slug>.<countryTld>` (e.g. `edetstensbehandlingshem.se`)
+   - `<slug-with-hyphens>.<countryTld>`
+   - `<acronym>.<countryTld>` (first letters of each word, only if 3+ words)
+   - same three with `.com`
+   
+   Issue a **HEAD request** (with redirect-follow) to each; keep the ones that return 2xx. Score them with the existing `scoreCandidate` (exact-stem match → score 4+). This is essentially free and catches the long tail.
+3. **Firecrawl `/map`** on the top search result's domain — only when the top search candidate scores 3–4 (borderline). `map` returns canonical homepage URL fast and often resolves redirects/company-group sites.
 
-### 4. Looser verification
+### 4. Better verification
 
-- Currently `verifyHomepage` requires a name token to appear in `<title>` or `og:site_name`. Many small business sites only have a logo image or use a tagline as title. Loosen by also checking:
-  - any `<meta name="description">` content
-  - the `<h1>` text
-  - the domain itself already contains a name token (skip verification entirely if so)
-- If verification fails but the candidate's domain stripped of TLD is an exact match for any name token (e.g. `osterlenportens.se` ↔ token `österlenportens` after folding), accept it.
+Loosen `verifyHomepage`:
+- Scrape the homepage AND the first internal "about/kontakt/contact" link found in the HTML (one extra request, only for borderline cases scoring 2–3).
+- In addition to the existing title/og/h1/meta-desc check, look for the cleaned name (or its ASCII fold) anywhere in the **entire scraped markdown** (not just specific tags). Title-only check fails for image-only branded sites.
+- Accept automatically when **registered domain stem == any name token** (already done) **OR** when domain is `<slug>.<expected-country-tld>` and HEAD returned 200 (no scrape needed at all).
 
-### 5. Retry-only-failed mode
+### 5. LLM tiebreaker via Lovable AI (free, gated)
 
-Add a new request flag `{ jobId, retryFailed: true }` to `resolve-domains-batch`. When set, it processes companies where `domain_status = 'failed'` (instead of skipping non-null-domain companies). Wire a second button "Retry failed" on the Job Detail page next to the existing "Resolve domains" button, shown only when `domainStats.failed > 0`.
+When the top two candidates are within 1 point of each other AND the leader scores < 5, send a tiny prompt to `google/gemini-2.5-flash-lite` via Lovable AI Gateway:
+> "Company name: X (country: Sweden). Pick the most likely official homepage from these candidates: [list of {host, title, snippet}]. Reply with only the host or 'none'."
 
-### 6. Slightly higher concurrency + better logging
+Only ~5–10% of companies trigger this, so cost is negligible. Massive accuracy boost on ambiguous Nordic / generic-name cases.
 
-- Bump `CONCURRENCY` from 5 → 8 (Firecrawl handles this comfortably for search calls).
-- Per-company `crawl_logs` entries for failures with the queries tried and top candidate (helps debug).
+### 6. Recovery & feedback loop
 
-### 7. Apply same improvements to single-shot `resolve-domain`
+- **Companies page row action "Mark domain wrong"**: clears `domain`/`website`, sets `domain_status = 'failed'`, and inserts the wrong host into a new `domain_blocklist` table (per-company OR global). Subsequent re-resolve runs skip that host for that company.
+- **JobDetail "Re-resolve all"** button (in addition to existing "Resolve domains" and "Retry failed"): forces re-resolution of every company in the job regardless of current `domain_status` — useful after improving the algorithm or fixing the country.
+- **Per-company resolution detail**: on `CompanyDetail.tsx`, show the candidates considered and the query that succeeded (already logged in `crawl_logs.meta_json`). Helps users understand and trust the result.
 
-Mirror the cleaner-query, fallback-search, and looser-verification logic in `supabase/functions/resolve-domain/index.ts` so the "Resolve" button on the Companies page benefits too.
+### 7. Concurrency, throttling, observability
+
+- Bump `CONCURRENCY` 8 → 12 for slug-probe + HEAD requests (search itself stays at 8 to respect Firecrawl).
+- Add structured `crawl_logs` for every resolution: `{ company, country, queries_tried, candidates_top3, source: search|slug|map|llm, score }`. Makes future tuning data-driven.
+- Per-company timeout cap of 30 s so one slow scrape can't stall a batch.
+
+## New table
+
+```sql
+create table public.domain_blocklist (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid,            -- null = global block
+  host text not null,
+  reason text,
+  created_at timestamptz not null default now(),
+  unique (company_id, host)
+);
+alter table public.domain_blocklist enable row level security;
+create policy "public read" on public.domain_blocklist for select using (true);
+create policy "public write" on public.domain_blocklist for insert with check (true);
+```
 
 ## Files to change
 
-- `supabase/functions/resolve-domains-batch/index.ts` — country inheritance, query cleanup + fallbacks, looser verification, retry-failed mode, concurrency bump
-- `supabase/functions/resolve-domain/index.ts` — same query/verification improvements
-- `src/pages/JobDetail.tsx` — add "Retry failed" button passing `{ jobId, retryFailed: true }`
+- `supabase/functions/resolve-domains-batch/index.ts` — slug probes, map fallback, LLM tiebreaker, broader verifier, country backfill at start, blocklist filter, structured logs
+- `supabase/functions/resolve-domain/index.ts` — same upgrades (single-shot path)
+- `src/lib/importPipeline.ts` — country propagation from job, scoped dedup, write `created_by_job_id`
+- `src/pages/CreateJob.tsx` — pass selected country into import options (frontend step)
+- `src/pages/Companies.tsx` — "Mark domain wrong" row action
+- `src/pages/CompanyDetail.tsx` — show resolution detail (candidates + winning query)
+- `src/pages/JobDetail.tsx` — "Re-resolve all" button next to existing two
+- `supabase/migrations/<new>.sql` — `domain_blocklist` table
 
-No DB migration required.
+## Recovery plan after deploy
+
+1. Open job `5f6d2017…` → Settings → set country to **Sweden** (currently null) → Save.
+2. Click **Re-resolve all**. With Sweden hint + slug probes + `.se` TLD bias, expect the unresolved+failed pool (~1079 companies) to drop by 60–80%.
 
 ## Success criteria
 
-- Re-running resolution on job `5f6d2017…` resolves a meaningful chunk of the 977 unresolved + "Retry failed" recovers a significant portion of the 136 failed companies.
-- Logs show which query variant succeeded for each company, making future tuning easier.
-- New jobs created with a country set on the job inherit that country automatically.
+- **Hit rate** on the current Swedish "Behandlingshem" job rises from ~26% (377/1456) to ≥ 75%.
+- New imports with a country set on the job get country propagated automatically; logs show which source (search / slug / map / llm) found each domain.
+- Users can mark a wrong domain and re-run resolution to fix it without manual SQL.
+- No regression in average per-company latency (< 4 s p50, < 10 s p95).
 
