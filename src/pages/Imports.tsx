@@ -194,11 +194,11 @@ export default function Imports() {
         </SectionCard>
       </div>
 
-      {parsed && parsed.headers.length > 0 && (
+      {parsed && headers.length > 0 && (
         <>
           <SectionCard title="Column mapping" description="Map source columns to target fields" className="mb-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {parsed.headers.map((h) => (
+              {headers.map((h) => (
                 <div key={h} className="flex items-center gap-3 p-3 rounded-md border border-border">
                   <div className="flex-1 min-w-0">
                     <p className="text-xs text-muted-foreground">Source column</p>
@@ -216,7 +216,7 @@ export default function Imports() {
               ))}
             </div>
             <div className="flex justify-end mt-4 gap-2">
-              <Button variant="outline" onClick={() => { setFile(null); setParsed(null); setMapping({}); }}>Cancel</Button>
+              <Button variant="outline" onClick={() => { setFile(null); setParsed(null); setHeaders([]); setPreviewRows([]); setMapping({}); }}>Cancel</Button>
               <Button onClick={() => importMut.mutate()} disabled={importMut.isPending}>
                 <CheckCircle2 className="h-4 w-4" /> {importMut.isPending ? "Running…" : "Run import"}
               </Button>
@@ -226,9 +226,9 @@ export default function Imports() {
           <SectionCard title="Preview" description="First 10 rows" noPadding className="mb-6">
             <div className="overflow-auto">
               <Table>
-                <TableHeader><TableRow>{parsed.headers.map((h) => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader>
+                <TableHeader><TableRow>{headers.map((h) => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader>
                 <TableBody>
-                  {parsed.rows.slice(0, 10).map((r, i) => (
+                  {previewRows.slice(0, 10).map((r, i) => (
                     <TableRow key={i}>{r.map((cell, j) => <TableCell key={j} className="text-sm">{cell}</TableCell>)}</TableRow>
                   ))}
                 </TableBody>
