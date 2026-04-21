@@ -240,13 +240,18 @@ export default function JobDetail() {
         </div>
       )}
 
-      <Tabs defaultValue="contacts">
+      <Tabs defaultValue="timeline">
         <TabsList>
+          <TabsTrigger value="timeline">Timeline</TabsTrigger>
           <TabsTrigger value="contacts">Contacts ({jobContacts.length})</TabsTrigger>
           <TabsTrigger value="people">People ({jobPeople.length})</TabsTrigger>
           <TabsTrigger value="pages">Source pages ({(sourcePages.data ?? []).length})</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="timeline">
+          <JobTimeline jobId={id} />
+        </TabsContent>
 
         <TabsContent value="contacts">
           <SectionCard title="Contact records" noPadding>
