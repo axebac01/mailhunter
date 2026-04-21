@@ -100,6 +100,14 @@ Deno.serve(async (req) => {
           const { data: cur } = await supabase.from("crawl_jobs").select("status").eq("id", jobId).maybeSingle();
           if (cur?.status !== "running") return;
 
+          await supabase.from("crawl_logs").insert({
+            crawl_job_id: jobId, level: "info",
+            message: `Starting ${c.name ?? c.domain}`,
+            meta_json: { event: "company_started", company: c.name ?? c.domain, company_id: c.id, host: c.domain },
+          });
+
+          const startedAt = Date.now();
+          let ok = true;
           try {
             const ctrl = new AbortController();
             const timer = setTimeout(() => ctrl.abort(), PER_COMPANY_TIMEOUT_MS);
@@ -120,6 +128,7 @@ Deno.serve(async (req) => {
             });
             clearTimeout(timer);
             if (!res.ok) {
+              ok = false;
               const text = await res.text().catch(() => "");
               await supabase.from("crawl_logs").insert({
                 crawl_job_id: jobId, level: "error",
@@ -127,12 +136,18 @@ Deno.serve(async (req) => {
               });
             }
           } catch (e: any) {
+            ok = false;
             const aborted = e?.name === "AbortError";
             await supabase.from("crawl_logs").insert({
               crawl_job_id: jobId, level: "error",
               message: aborted ? `Scrape timed out (>${PER_COMPANY_TIMEOUT_MS}ms) for ${c.domain}` : `Scrape threw for ${c.domain}: ${e?.message ?? e}`,
             });
           }
+          await supabase.from("crawl_logs").insert({
+            crawl_job_id: jobId, level: ok ? "info" : "warn",
+            message: `Finished ${c.name ?? c.domain} in ${Math.round((Date.now() - startedAt) / 1000)}s`,
+            meta_json: { event: "company_finished", company: c.name ?? c.domain, company_id: c.id, host: c.domain, ok, duration_ms: Date.now() - startedAt },
+          });
           scraped++;
           if (scraped % 10 === 0 || scraped === todo.length) await refreshCounters();
         }, CONCURRENCY);
