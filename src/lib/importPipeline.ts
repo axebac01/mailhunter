@@ -1,39 +1,101 @@
-// World-class bulk import pipeline.
-// Replaces sequential per-row loop with 5 set-based phases:
-//   A. Parse & normalize (in-memory, no DB)
-//   B. Bulk-fetch existing companies (2 queries)
-//   C. Bulk-insert new companies (chunks of 500, parallel up to 4)
-//   D. Bulk-insert import_rows already with final status (chunks of 500)
-//   E. Single final UPDATE on imports
-// Plus: in-import dedup, off-thread parsing for large files,
-// chunk-level error fallback, fire-and-forget resolver enqueue.
+// World-class streaming bulk import pipeline.
+// - CSV: streamed via PapaParse (constant memory regardless of file size)
+// - XLSX: parsed once in a worker, then fed batch-by-batch
+// Per-batch: normalize → match (domain + name, country-scoped, LRU-cached)
+//   → insert new companies (chunked, parallel) → insert import_rows
+//   → fire-and-forget resolver enqueue in waves of 200 ids.
 
 import * as XLSX from "xlsx";
+import Papa from "papaparse";
 import { supabase } from "@/integrations/supabase/client";
 import { api } from "@/lib/api";
+
+// ============================================================================
+// Types
+// ============================================================================
 
 export interface ParsedFile {
   headers: string[];
   rows: string[][];
 }
 
-// --------- Parser (worker for large files, main thread otherwise) ----------
+export type Mapping = Record<string, "company_name" | "country" | "website" | "industry" | "notes" | "ignore">;
 
-const WORKER_THRESHOLD_BYTES = 1_000_000; // ~1MB → run off-thread
+export type ImportPhase = "reading" | "parsing" | "matching" | "saving" | "done";
 
-export async function parseFile(file: File): Promise<ParsedFile> {
-  const buf = await file.arrayBuffer();
-  if (buf.byteLength >= WORKER_THRESHOLD_BYTES && typeof Worker !== "undefined") {
-    try {
-      return await parseInWorker(buf);
-    } catch {
-      // fall through to main-thread parse
-    }
-  }
-  return parseSync(buf);
+export interface ImportProgress {
+  phase: ImportPhase;
+  processed: number;
+  total: number;
+  p?: number;
+  t?: number;
 }
 
-function parseSync(buf: ArrayBuffer): ParsedFile {
+export interface ImportOptions {
+  attachJobId: string | null;
+  ignoreDuplicates: boolean;
+  overwriteEmpty: boolean;
+  autoStart: boolean;
+  defaultCountry?: string | null;
+  createdByJobId?: string | null;
+}
+
+export type ParseResult =
+  | { kind: "buffered"; parsed: ParsedFile }
+  | { kind: "stream"; headers: string[]; previewRows: string[][]; iterate: (onBatch: (rows: string[][]) => Promise<void>) => Promise<number> };
+
+export interface RunImportArgs {
+  file: File;
+  parsed: ParsedFile | ParseResult; // accept either for backward compat
+  mapping: Mapping;
+  options: ImportOptions;
+  onProgress?: (processed: number, total: number, phase?: ImportPhase) => void;
+}
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+const BATCH_SIZE = 2000;            // rows per pipeline batch
+const COMPANY_CHUNK = 500;
+const ROW_CHUNK = 500;
+const PARALLEL_CHUNKS = 4;
+const RESOLVER_WAVE_SIZE = 200;     // companyIds per resolve-domains-batch invoke
+const RESOLVER_PARALLEL = 3;
+const HARD_ROW_CAP = 1_000_000;
+const STREAM_THRESHOLD_BYTES = 2_000_000; // CSV ≥ 2MB → stream
+const XLSX_WARN_BYTES = 25 * 1024 * 1024;
+
+// ============================================================================
+// Parser entry point
+// ============================================================================
+
+export async function parseFile(file: File): Promise<ParseResult> {
+  const isCsv = /\.csv$/i.test(file.name);
+  if (isCsv && file.size >= STREAM_THRESHOLD_BYTES) {
+    return makeCsvStream(file);
+  }
+  // Buffered path: small CSV or any XLSX/XLS
+  if (isCsv) {
+    const text = await file.text();
+    const parsed = parseCsvSync(text);
+    return { kind: "buffered", parsed };
+  }
+  const buf = await file.arrayBuffer();
+  const parsed = parseXlsxSync(buf);
+  return { kind: "buffered", parsed };
+}
+
+function parseCsvSync(text: string): ParsedFile {
+  const out = Papa.parse<string[]>(text, { skipEmptyLines: true });
+  const rows = (out.data ?? []) as string[][];
+  if (rows.length === 0) return { headers: [], rows: [] };
+  const headers = (rows[0] || []).map((h) => String(h).trim());
+  const data = rows.slice(1).filter((r) => r.some((c) => String(c ?? "").trim() !== ""));
+  return { headers, rows: data.map((r) => r.map((c) => String(c ?? ""))) };
+}
+
+function parseXlsxSync(buf: ArrayBuffer): ParsedFile {
   const wb = XLSX.read(buf, { type: "array", dense: true });
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const rows: string[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", blankrows: false }) as any;
@@ -45,22 +107,91 @@ function parseSync(buf: ArrayBuffer): ParsedFile {
   return { headers, rows: data };
 }
 
-function parseInWorker(buf: ArrayBuffer): Promise<ParsedFile> {
+// Streaming CSV: returns headers + first preview rows immediately.
+// `iterate` re-streams the file from the start, batching rows to onBatch.
+function makeCsvStream(file: File): Promise<ParseResult> {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("../workers/parseFile.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (ev: MessageEvent<{ ok: boolean; headers?: string[]; rows?: string[][]; error?: string }>) => {
-      worker.terminate();
-      if (ev.data.ok) resolve({ headers: ev.data.headers ?? [], rows: ev.data.rows ?? [] });
-      else reject(new Error(ev.data.error ?? "Worker parse failed"));
-    };
-    worker.onerror = (e) => { worker.terminate(); reject(new Error(e.message || "Worker error")); };
-    worker.postMessage({ buffer: buf }, [buf]);
+    let headers: string[] = [];
+    const previewRows: string[][] = [];
+    let firstChunk = true;
+    Papa.parse<string[]>(file as any, {
+      worker: true,
+      skipEmptyLines: true,
+      preview: 12,
+      complete: (res) => {
+        const data = (res.data ?? []) as string[][];
+        if (data.length === 0) { reject(new Error("Empty CSV")); return; }
+        headers = (data[0] || []).map((h) => String(h).trim());
+        for (const r of data.slice(1, 11)) previewRows.push(r.map((c) => String(c ?? "")));
+        firstChunk = false;
+        resolve({
+          kind: "stream",
+          headers,
+          previewRows,
+          iterate: (onBatch) => streamCsv(file, onBatch),
+        });
+      },
+      error: (err) => reject(err),
+    });
+    void firstChunk;
   });
 }
 
-// --------- Mapping ----------
+function streamCsv(file: File, onBatch: (rows: string[][]) => Promise<void>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let buffer: string[][] = [];
+    let total = 0;
+    let isHeader = true;
+    let pendingError: any = null;
 
-export type Mapping = Record<string, "company_name" | "country" | "website" | "industry" | "notes" | "ignore">;
+    Papa.parse<string[]>(file as any, {
+      worker: true,
+      skipEmptyLines: true,
+      chunkSize: 1024 * 256, // 256KB raw chunks
+      chunk: async (results, parser) => {
+        if (pendingError) return;
+        const data = (results.data ?? []) as string[][];
+        let start = 0;
+        if (isHeader && data.length > 0) { isHeader = false; start = 1; }
+        for (let i = start; i < data.length; i++) {
+          const r = data[i];
+          if (!r || !r.some((c) => String(c ?? "").trim() !== "")) continue;
+          buffer.push(r.map((c) => String(c ?? "")));
+          if (buffer.length >= BATCH_SIZE) {
+            const out = buffer; buffer = [];
+            parser.pause();
+            try {
+              await onBatch(out);
+              total += out.length;
+              if (total > HARD_ROW_CAP) {
+                pendingError = new Error(`File exceeds ${HARD_ROW_CAP.toLocaleString()} row cap`);
+                parser.abort();
+                return;
+              }
+              parser.resume();
+            } catch (e) {
+              pendingError = e;
+              parser.abort();
+            }
+          }
+        }
+      },
+      complete: async () => {
+        if (pendingError) { reject(pendingError); return; }
+        if (buffer.length > 0) {
+          try { await onBatch(buffer); total += buffer.length; buffer = []; }
+          catch (e) { reject(e); return; }
+        }
+        resolve(total);
+      },
+      error: (err) => reject(err),
+    });
+  });
+}
+
+// ============================================================================
+// Mapping helpers
+// ============================================================================
 
 export function autoMap(headers: string[]): Mapping {
   const m: Mapping = {};
@@ -76,7 +207,16 @@ export function autoMap(headers: string[]): Mapping {
   return m;
 }
 
-// --------- Helpers ----------
+export function checkLargeXlsx(file: File): { warn: boolean; reason?: string } {
+  if (/\.(xls|xlsx)$/i.test(file.name) && file.size > XLSX_WARN_BYTES) {
+    return { warn: true, reason: `Large Excel file (${(file.size / 1024 / 1024).toFixed(1)} MB). For files >25 MB, CSV is faster and uses less memory.` };
+  }
+  return { warn: false };
+}
+
+// ============================================================================
+// Utility helpers
+// ============================================================================
 
 function domainFrom(website: string | undefined | null): string | null {
   if (!website) return null;
@@ -109,93 +249,73 @@ async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item
   return out;
 }
 
-// --------- Public types ----------
-
-export type ImportPhase = "parsing" | "matching" | "saving" | "done";
-
-export interface ImportProgress {
-  phase: ImportPhase;
-  processed: number;
-  total: number;
-  /** legacy compat */
-  p?: number;
-  t?: number;
+// Tiny LRU cache for cross-batch domain/name lookups.
+class LRU<K, V> {
+  private map = new Map<K, V>();
+  constructor(private max: number) {}
+  get(k: K): V | undefined {
+    const v = this.map.get(k);
+    if (v !== undefined) { this.map.delete(k); this.map.set(k, v); }
+    return v;
+  }
+  set(k: K, v: V) {
+    if (this.map.has(k)) this.map.delete(k);
+    this.map.set(k, v);
+    if (this.map.size > this.max) {
+      const first = this.map.keys().next().value as K | undefined;
+      if (first !== undefined) this.map.delete(first);
+    }
+  }
+  has(k: K) { return this.map.has(k); }
 }
 
-export interface ImportOptions {
-  attachJobId: string | null;
+// ============================================================================
+// Per-batch pipeline state (shared across batches in one runImport call)
+// ============================================================================
+
+interface PipelineCtx {
+  importId: string;
   ignoreDuplicates: boolean;
-  overwriteEmpty: boolean;
-  autoStart: boolean;
-  defaultCountry?: string | null;
-  createdByJobId?: string | null;
+  createdByJobId: string | null;
+  // Cross-batch dedup
+  seenDomain: Set<string>;
+  seenNameKey: Set<string>;
+  // Cross-batch lookup caches
+  domainCache: LRU<string, string>;        // domain → companyId
+  nameKeyCache: LRU<string, string>;       // name|country → companyId
+  // Aggregates
+  totalRows: number;
+  processedRows: number;
+  matchedRows: number;
+  failedRows: number;
+  insertedCompanyIds: string[];            // for resolver enqueue
+  // Resolver wave dispatch
+  resolverWavesQueued: number;
+  resolverInflight: Promise<unknown>[];
 }
 
-export interface RunImportArgs {
-  file: File;
-  parsed: ParsedFile;
-  mapping: Mapping;
-  options: ImportOptions;
-  /** Backward-compatible: old (processed, total) signature still works.
-   *  New callers can read `phase` from the third arg. */
-  onProgress?: (processed: number, total: number, phase?: ImportPhase) => void;
-}
+type Norm = {
+  companyName: string;
+  country: string | null;
+  website: string | null;
+  industry: string | null;
+  notes: string | null;
+  domain: string | null;
+  nameKey: string;
+};
 
-const COMPANY_CHUNK = 500;
-const ROW_CHUNK = 500;
-const PARALLEL_CHUNKS = 4;
+interface BatchOutcome { matched: number; failed: number; }
 
-// --------- Main entry ----------
-
-export async function runImport(args: RunImportArgs): Promise<string> {
-  const { file, parsed, mapping, options } = args;
-  const { headers, rows } = parsed;
-  const emit = (phase: ImportPhase, processed: number, total: number) => args.onProgress?.(processed, total, phase);
-
-  const colIdx = (target: Mapping[string]) => headers.findIndex((h) => mapping[h] === target);
-  const cName = colIdx("company_name");
-  const cCountry = colIdx("country");
-  const cWebsite = colIdx("website");
-  const cIndustry = colIdx("industry");
-  const cNotes = colIdx("notes");
-  if (cName === -1) throw new Error("You must map a column to company_name");
-
-  const defaultCountry = options.defaultCountry?.trim() || null;
-  const createdByJobId = options.createdByJobId ?? null;
-  const ignoreDuplicates = options.ignoreDuplicates;
-
-  // Create import record up front so the UI sees it instantly.
-  const importRec = await api.createImport({
-    file_name: file.name,
-    file_type: file.name.split(".").pop()?.toLowerCase() ?? "csv",
-    status: "processing",
-    total_rows: rows.length,
-    crawl_job_id: options.attachJobId,
-  });
-
-  // ===== Phase A: normalize =====
-  emit("matching", 0, rows.length);
-
-  type Norm = {
-    rowIdx: number;
-    companyName: string;
-    country: string | null;
-    website: string | null;
-    industry: string | null;
-    notes: string | null;
-    domain: string | null;
-    nameKey: string; // normName(name) | country
-  };
-
-  const normalized: Norm[] = rows.map((r, i) => {
-    const name = (r[cName] ?? "").trim() || "Unknown";
-    const country = ((cCountry >= 0 ? r[cCountry] : "") || defaultCountry || "").trim() || null;
-    const website = cWebsite >= 0 ? (r[cWebsite] || null) : null;
-    const industry = cIndustry >= 0 ? (r[cIndustry] || null) : null;
-    const notes = cNotes >= 0 ? (r[cNotes] || null) : null;
+async function processBatch(ctx: PipelineCtx, rawRows: string[][], col: { name: number; country: number; website: number; industry: number; notes: number }, defaultCountry: string | null): Promise<BatchOutcome> {
+  // ---- Normalize ----
+  const normalized: Norm[] = rawRows.map((r) => {
+    const name = (r[col.name] ?? "").trim() || "Unknown";
+    const country = ((col.country >= 0 ? r[col.country] : "") || defaultCountry || "").trim() || null;
+    const website = col.website >= 0 ? (r[col.website] || null) : null;
+    const industry = col.industry >= 0 ? (r[col.industry] || null) : null;
+    const notes = col.notes >= 0 ? (r[col.notes] || null) : null;
     const domain = domainFrom(website);
     return {
-      rowIdx: i,
       companyName: name,
       country,
       website,
@@ -206,96 +326,120 @@ export async function runImport(args: RunImportArgs): Promise<string> {
     };
   });
 
-  const distinctDomains = Array.from(new Set(normalized.filter((n) => n.domain).map((n) => n.domain!)));
-  const nameOnlyRows = normalized.filter((n) => !n.domain);
-  const distinctNameKeys = Array.from(new Set(nameOnlyRows.map((n) => n.nameKey)));
-  const distinctNames = Array.from(new Set(nameOnlyRows.map((n) => normName(n.companyName))));
-
-  // ===== Phase B: bulk-fetch existing matches =====
-
+  // ---- Match phase B (only what's not in cache) ----
   const domainToId = new Map<string, string>();
-  if (distinctDomains.length > 0) {
-    for (const dchunk of chunk(distinctDomains, 500)) {
-      const { data } = await supabase.from("companies").select("id, domain").in("domain", dchunk);
-      for (const c of data ?? []) {
-        if (c.domain) domainToId.set(c.domain, c.id);
-      }
+  const nameKeyToId = new Map<string, string>();
+
+  // Seed from cache
+  const domainsToFetch = new Set<string>();
+  const namesToFetch = new Set<string>();
+  const countriesInBatch = new Set<string>();
+  for (const n of normalized) {
+    if (n.country) countriesInBatch.add(n.country);
+    if (n.domain) {
+      const cached = ctx.domainCache.get(n.domain);
+      if (cached) domainToId.set(n.domain, cached);
+      else domainsToFetch.add(n.domain);
+    } else {
+      const cached = ctx.nameKeyCache.get(n.nameKey);
+      if (cached) nameKeyToId.set(n.nameKey, cached);
+      else namesToFetch.add(normName(n.companyName));
     }
   }
 
-  // Name-only: only reuse RESOLVED companies, scoped by country (or NULL country).
-  const nameKeyToId = new Map<string, string>();
-  if (distinctNames.length > 0) {
-    for (const nchunk of chunk(distinctNames, 500)) {
-      const { data } = await supabase
-        .from("companies")
-        .select("id, name, country")
-        .eq("domain_status", "resolved")
-        .in("name", nchunk);
+  // Domain lookup
+  if (domainsToFetch.size > 0) {
+    const list = Array.from(domainsToFetch);
+    for (const dchunk of chunk(list, 500)) {
+      const { data } = await supabase.from("companies").select("id, domain").in("domain", dchunk);
       for (const c of data ?? []) {
-        const cName = normName(c.name);
-        const cCountry = (c.country ?? "").toLowerCase();
-        // Match key: same name + same country, OR same name + NULL country (acts as wildcard reuse)
-        nameKeyToId.set(`${cName}|${cCountry}`, c.id);
-        if (!c.country) {
-          // also let this match any country bucket if no other match exists
-          for (const key of distinctNameKeys) {
-            if (key.startsWith(`${cName}|`) && !nameKeyToId.has(key)) {
-              nameKeyToId.set(key, c.id);
-            }
-          }
+        if (c.domain) {
+          domainToId.set(c.domain, c.id);
+          ctx.domainCache.set(c.domain, c.id);
         }
       }
     }
   }
 
-  // ===== Phase C: bulk-insert new companies =====
-  emit("saving", 0, rows.length);
+  // Name-only lookup, country-scoped
+  if (namesToFetch.size > 0) {
+    const names = Array.from(namesToFetch);
+    const countries = Array.from(countriesInBatch);
+    for (const nchunk of chunk(names, 500)) {
+      let q = supabase
+        .from("companies")
+        .select("id, name, country")
+        .eq("domain_status", "resolved")
+        .in("name", nchunk);
+      // Scope by country (include NULL country as wildcard reuse).
+      if (countries.length > 0 && countries.length <= 20) {
+        // Postgrest can't OR `in(country, [...])` with `is null` cleanly via the JS client,
+        // so fetch both and merge client-side.
+        const { data: byCountry } = await q.in("country", countries);
+        const { data: nullCountry } = await supabase
+          .from("companies").select("id, name, country")
+          .eq("domain_status", "resolved").in("name", nchunk).is("country", null);
+        const merged = [...(byCountry ?? []), ...(nullCountry ?? [])];
+        for (const c of merged) {
+          const key = `${normName(c.name)}|${(c.country ?? "").toLowerCase()}`;
+          nameKeyToId.set(key, c.id);
+          ctx.nameKeyCache.set(key, c.id);
+          if (!c.country) {
+            // wildcard: any in-batch nameKey starting with this name
+            for (const n of normalized) {
+              if (!n.domain && normName(n.companyName) === normName(c.name) && !nameKeyToId.has(n.nameKey)) {
+                nameKeyToId.set(n.nameKey, c.id);
+                ctx.nameKeyCache.set(n.nameKey, c.id);
+              }
+            }
+          }
+        }
+      } else {
+        const { data } = await q;
+        for (const c of data ?? []) {
+          const key = `${normName(c.name)}|${(c.country ?? "").toLowerCase()}`;
+          nameKeyToId.set(key, c.id);
+          ctx.nameKeyCache.set(key, c.id);
+        }
+      }
+    }
+  }
 
-  // Build dedup-aware insert payloads (one per unmatched domain, one per unmatched nameKey).
-  const newCompaniesByDomain = new Map<string, any>();
-  const newCompaniesByNameKey = new Map<string, any>();
-  const firstByDomain = new Map<string, Norm>();
-  const firstByNameKey = new Map<string, Norm>();
+  // ---- Insert new companies (deduped within batch) ----
+  const newDomainPayloads: any[] = [];
+  const newDomainKeys: string[] = [];
+  const newNamePayloads: any[] = [];
+  const newNameKeys: string[] = [];
+  const seenNewDomain = new Set<string>();
+  const seenNewName = new Set<string>();
 
   for (const n of normalized) {
     if (n.domain) {
       if (domainToId.has(n.domain)) continue;
-      if (newCompaniesByDomain.has(n.domain)) continue;
-      firstByDomain.set(n.domain, n);
-      newCompaniesByDomain.set(n.domain, {
-        name: n.companyName,
-        domain: n.domain,
-        website: n.website,
-        country: n.country,
-        industry: n.industry,
-        notes: n.notes,
-        source_url: n.website,
-        created_by_job_id: createdByJobId,
+      if (seenNewDomain.has(n.domain)) continue;
+      seenNewDomain.add(n.domain);
+      newDomainKeys.push(n.domain);
+      newDomainPayloads.push({
+        name: n.companyName, domain: n.domain, website: n.website,
+        country: n.country, industry: n.industry, notes: n.notes,
+        source_url: n.website, created_by_job_id: ctx.createdByJobId,
         domain_status: "resolved",
       });
     } else {
       if (nameKeyToId.has(n.nameKey)) continue;
-      if (newCompaniesByNameKey.has(n.nameKey)) continue;
-      firstByNameKey.set(n.nameKey, n);
-      newCompaniesByNameKey.set(n.nameKey, {
-        name: n.companyName.trim(),
-        country: n.country,
-        industry: n.industry,
-        notes: n.notes,
-        domain_status: "unresolved",
-        created_by_job_id: createdByJobId,
+      if (seenNewName.has(n.nameKey)) continue;
+      seenNewName.add(n.nameKey);
+      newNameKeys.push(n.nameKey);
+      newNamePayloads.push({
+        name: n.companyName.trim(), country: n.country,
+        industry: n.industry, notes: n.notes,
+        domain_status: "unresolved", created_by_job_id: ctx.createdByJobId,
       });
     }
   }
 
-  const newDomainPayloads = Array.from(newCompaniesByDomain.values());
-  const newNamePayloads = Array.from(newCompaniesByNameKey.values());
+  const newlyInserted: string[] = [];
 
-  let companyInsertFailures = 0;
-  const insertedCompanyIds: string[] = []; // for the resolver enqueue
-
-  // Insert domain-keyed companies (upsert on domain to absorb concurrent duplicates).
   if (newDomainPayloads.length > 0) {
     const chunks = chunk(newDomainPayloads, COMPANY_CHUNK);
     await runWithConcurrency(chunks, PARALLEL_CHUNKS, async (ck) => {
@@ -303,68 +447,62 @@ export async function runImport(args: RunImportArgs): Promise<string> {
         const { data, error } = await supabase
           .from("companies")
           .upsert(ck as any, { onConflict: "domain", ignoreDuplicates: false })
-          .select("id, domain, name");
+          .select("id, domain");
         if (error) throw error;
         for (const c of data ?? []) {
-          if (c.domain) domainToId.set(c.domain, c.id);
-          insertedCompanyIds.push(c.id);
+          if (c.domain) {
+            domainToId.set(c.domain, c.id);
+            ctx.domainCache.set(c.domain, c.id);
+          }
+          newlyInserted.push(c.id);
         }
       } catch {
-        // Per-row fallback for this chunk only.
         for (const row of ck) {
           try {
             const { data: c } = await supabase
               .from("companies")
               .upsert(row as any, { onConflict: "domain", ignoreDuplicates: false })
-              .select("id, domain")
-              .single();
-            if (c?.domain) domainToId.set(c.domain, c.id);
-            if (c?.id) insertedCompanyIds.push(c.id);
-          } catch {
-            companyInsertFailures++;
-          }
+              .select("id, domain").single();
+            if (c?.domain) { domainToId.set(c.domain, c.id); ctx.domainCache.set(c.domain, c.id); }
+            if (c?.id) newlyInserted.push(c.id);
+          } catch { /* per-row failure absorbed in failed count below */ }
         }
       }
     });
   }
 
-  // Insert name-only companies (no unique constraint on name → plain insert).
   if (newNamePayloads.length > 0) {
-    const payloadKeys = Array.from(newCompaniesByNameKey.keys());
-    const chunks = chunk(payloadKeys, COMPANY_CHUNK);
-    await runWithConcurrency(chunks, PARALLEL_CHUNKS, async (keyChunk) => {
-      const ck = keyChunk.map((k) => newCompaniesByNameKey.get(k));
+    const idxChunks = chunk(newNameKeys.map((_, i) => i), COMPANY_CHUNK);
+    await runWithConcurrency(idxChunks, PARALLEL_CHUNKS, async (idxs) => {
+      const ck = idxs.map((i) => newNamePayloads[i]);
       try {
-        const { data, error } = await supabase.from("companies").insert(ck as any).select("id, name");
+        const { data, error } = await supabase.from("companies").insert(ck as any).select("id");
         if (error) throw error;
-        // Map returned ids back to nameKeys by position (insert preserves order).
         (data ?? []).forEach((c: any, i: number) => {
-          const key = keyChunk[i];
-          if (key) nameKeyToId.set(key, c.id);
-          insertedCompanyIds.push(c.id);
+          const key = newNameKeys[idxs[i]];
+          if (key) { nameKeyToId.set(key, c.id); ctx.nameKeyCache.set(key, c.id); }
+          newlyInserted.push(c.id);
         });
       } catch {
         for (let i = 0; i < ck.length; i++) {
           try {
             const { data: c } = await supabase.from("companies").insert(ck[i] as any).select("id").single();
             if (c?.id) {
-              nameKeyToId.set(keyChunk[i], c.id);
-              insertedCompanyIds.push(c.id);
+              const key = newNameKeys[idxs[i]];
+              if (key) { nameKeyToId.set(key, c.id); ctx.nameKeyCache.set(key, c.id); }
+              newlyInserted.push(c.id);
             }
-          } catch {
-            companyInsertFailures++;
-          }
+          } catch { /* swallow */ }
         }
       }
     });
   }
 
-  // ===== Phase D: bulk-insert import_rows with final status =====
+  // Track for resolver enqueue
+  if (newlyInserted.length > 0) ctx.insertedCompanyIds.push(...newlyInserted);
 
+  // ---- Build import_rows payloads ----
   type RowStatus = "matched" | "duplicate" | "failed";
-  const seenDomain = new Set<string>();
-  const seenNameKey = new Set<string>();
-
   const importRowPayloads = normalized.map<any>((n) => {
     let companyId: string | null = null;
     let status: RowStatus = "failed";
@@ -373,9 +511,9 @@ export async function runImport(args: RunImportArgs): Promise<string> {
     if (n.domain) {
       companyId = domainToId.get(n.domain) ?? null;
       if (companyId) {
-        const isDup = seenDomain.has(n.domain);
-        seenDomain.add(n.domain);
-        status = isDup && ignoreDuplicates ? "duplicate" : "matched";
+        const isDup = ctx.seenDomain.has(n.domain);
+        ctx.seenDomain.add(n.domain);
+        status = isDup && ctx.ignoreDuplicates ? "duplicate" : "matched";
       } else {
         status = "failed";
         errorMessage = "Could not create or match company by domain";
@@ -383,9 +521,9 @@ export async function runImport(args: RunImportArgs): Promise<string> {
     } else {
       companyId = nameKeyToId.get(n.nameKey) ?? null;
       if (companyId) {
-        const isDup = seenNameKey.has(n.nameKey);
-        seenNameKey.add(n.nameKey);
-        status = isDup && ignoreDuplicates ? "duplicate" : "matched";
+        const isDup = ctx.seenNameKey.has(n.nameKey);
+        ctx.seenNameKey.add(n.nameKey);
+        status = isDup && ctx.ignoreDuplicates ? "duplicate" : "matched";
       } else {
         status = "failed";
         errorMessage = "Could not create company (name-only)";
@@ -393,7 +531,7 @@ export async function runImport(args: RunImportArgs): Promise<string> {
     }
 
     return {
-      import_id: importRec.id,
+      import_id: ctx.importId,
       company_name: n.companyName,
       country: n.country,
       website: n.website,
@@ -412,46 +550,179 @@ export async function runImport(args: RunImportArgs): Promise<string> {
     else if (r.status === "failed") failed++;
   }
 
-  let processedSoFar = 0;
   const rowChunks = chunk(importRowPayloads, ROW_CHUNK);
   await runWithConcurrency(rowChunks, PARALLEL_CHUNKS, async (ck) => {
     try {
       const { error } = await supabase.from("import_rows").insert(ck as any);
       if (error) throw error;
     } catch {
-      // Per-row fallback for this chunk only.
       for (const r of ck) {
         try { await supabase.from("import_rows").insert(r as any); }
-        catch { /* swallow — counter already accounted for */ }
+        catch { /* swallow */ }
       }
     }
-    processedSoFar += ck.length;
-    emit("saving", processedSoFar, importRowPayloads.length);
-    // Light-weight live progress on `imports` so the history table updates.
-    api.updateImport(importRec.id, { processed_rows: processedSoFar, matched_rows: matched, failed_rows: failed }).catch(() => {});
   });
 
-  // ===== Phase E: final import update =====
-  await api.updateImport(importRec.id, {
-    status: failed === importRowPayloads.length ? "failed" : "completed",
-    processed_rows: importRowPayloads.length,
-    matched_rows: matched,
-    failed_rows: failed,
-  });
+  return { matched, failed };
+}
 
-  emit("done", importRowPayloads.length, importRowPayloads.length);
+// ============================================================================
+// Resolver enqueue (chunked, fire-and-forget)
+// ============================================================================
 
-  // Fire-and-forget: enqueue server-side batch domain resolution for this import.
-  // Pass companyIds directly so the resolver doesn't have to re-query.
-  if (insertedCompanyIds.length > 0) {
-    supabase.functions.invoke("resolve-domains-batch", {
-      body: { importId: importRec.id, companyIds: insertedCompanyIds },
-    }).catch(() => {});
-  } else {
-    supabase.functions.invoke("resolve-domains-batch", {
-      body: { importId: importRec.id },
-    }).catch(() => {});
+function enqueueResolverWaves(ctx: PipelineCtx) {
+  if (ctx.insertedCompanyIds.length === 0) return;
+  const ids = ctx.insertedCompanyIds.splice(0, ctx.insertedCompanyIds.length);
+  const waves = chunk(ids, RESOLVER_WAVE_SIZE);
+  const totalParts = waves.length;
+  // Cap parallel invokes; don't await
+  let i = 0;
+  const startNext = () => {
+    while (ctx.resolverInflight.length < RESOLVER_PARALLEL && i < waves.length) {
+      const partIndex = ctx.resolverWavesQueued + i;
+      const ck = waves[i++];
+      const p = supabase.functions.invoke("resolve-domains-batch", {
+        body: { importId: ctx.importId, companyIds: ck, partIndex, totalParts: ctx.resolverWavesQueued + totalParts },
+      }).catch(() => {}).finally(() => {
+        const idx = ctx.resolverInflight.indexOf(p);
+        if (idx >= 0) ctx.resolverInflight.splice(idx, 1);
+        startNext();
+      });
+      ctx.resolverInflight.push(p);
+    }
+  };
+  ctx.resolverWavesQueued += totalParts;
+  startNext();
+}
+
+// ============================================================================
+// Main entry
+// ============================================================================
+
+export async function runImport(args: RunImportArgs): Promise<string> {
+  const { file, mapping, options } = args;
+
+  // Normalize the `parsed` arg: accept legacy ParsedFile or new ParseResult.
+  const parseResult: ParseResult = (args.parsed as any).kind
+    ? (args.parsed as ParseResult)
+    : { kind: "buffered", parsed: args.parsed as ParsedFile };
+
+  const headers = parseResult.kind === "buffered" ? parseResult.parsed.headers : parseResult.headers;
+  const emit = (phase: ImportPhase, processed: number, total: number) => args.onProgress?.(processed, total, phase);
+
+  const colIdx = (target: Mapping[string]) => headers.findIndex((h) => mapping[h] === target);
+  const col = {
+    name: colIdx("company_name"),
+    country: colIdx("country"),
+    website: colIdx("website"),
+    industry: colIdx("industry"),
+    notes: colIdx("notes"),
+  };
+  if (col.name === -1) throw new Error("You must map a column to company_name");
+
+  const defaultCountry = options.defaultCountry?.trim() || null;
+
+  // Total: known up-front for buffered, unknown (0) for stream until done.
+  const totalUpFront = parseResult.kind === "buffered" ? parseResult.parsed.rows.length : 0;
+  if (totalUpFront > HARD_ROW_CAP) {
+    throw new Error(`File exceeds ${HARD_ROW_CAP.toLocaleString()} row cap`);
   }
 
-  return importRec.id;
+  const importRec = await api.createImport({
+    file_name: file.name,
+    file_type: file.name.split(".").pop()?.toLowerCase() ?? "csv",
+    status: "processing",
+    total_rows: totalUpFront,
+    crawl_job_id: options.attachJobId,
+  });
+
+  const ctx: PipelineCtx = {
+    importId: importRec.id,
+    ignoreDuplicates: options.ignoreDuplicates,
+    createdByJobId: options.createdByJobId ?? null,
+    seenDomain: new Set(),
+    seenNameKey: new Set(),
+    domainCache: new LRU(20_000),
+    nameKeyCache: new LRU(20_000),
+    totalRows: totalUpFront,
+    processedRows: 0,
+    matchedRows: 0,
+    failedRows: 0,
+    insertedCompanyIds: [],
+    resolverWavesQueued: 0,
+    resolverInflight: [],
+  };
+
+  emit("matching", 0, totalUpFront);
+
+  const runOneBatch = async (rows: string[][]) => {
+    try {
+      const { matched, failed } = await processBatch(ctx, rows, col, defaultCountry);
+      ctx.matchedRows += matched;
+      ctx.failedRows += failed;
+      ctx.processedRows += rows.length;
+    } catch (e: any) {
+      // Whole batch failed → mark every row as failed but keep going.
+      const errMsg = String(e?.message ?? e);
+      ctx.failedRows += rows.length;
+      ctx.processedRows += rows.length;
+      // Try to write minimal failure rows so the user sees them.
+      const stub = rows.map((r) => ({
+        import_id: ctx.importId,
+        company_name: (r[col.name] ?? "").trim() || "Unknown",
+        country: (col.country >= 0 ? r[col.country] : null) || defaultCountry || null,
+        status: "failed" as const,
+        error_message: errMsg.slice(0, 500),
+      }));
+      try { await supabase.from("import_rows").insert(stub as any); } catch { /* swallow */ }
+    }
+
+    if (ctx.totalRows < ctx.processedRows) ctx.totalRows = ctx.processedRows;
+    emit("saving", ctx.processedRows, ctx.totalRows);
+    api.updateImport(ctx.importId, {
+      processed_rows: ctx.processedRows,
+      matched_rows: ctx.matchedRows,
+      failed_rows: ctx.failedRows,
+      total_rows: ctx.totalRows,
+    }).catch(() => {});
+
+    // Fire resolver waves opportunistically as new companies accumulate.
+    if (ctx.insertedCompanyIds.length >= RESOLVER_WAVE_SIZE * 2) {
+      enqueueResolverWaves(ctx);
+    }
+  };
+
+  if (parseResult.kind === "buffered") {
+    const allRows = parseResult.parsed.rows;
+    const batches = chunk(allRows, BATCH_SIZE);
+    for (const batch of batches) {
+      await runOneBatch(batch);
+    }
+  } else {
+    const total = await parseResult.iterate(runOneBatch);
+    if (total === 0 && ctx.processedRows === 0) {
+      // empty file
+    }
+  }
+
+  // Final resolver wave for any leftover ids
+  enqueueResolverWaves(ctx);
+
+  await api.updateImport(ctx.importId, {
+    status: ctx.processedRows > 0 && ctx.failedRows === ctx.processedRows ? "failed" : "completed",
+    processed_rows: ctx.processedRows,
+    matched_rows: ctx.matchedRows,
+    failed_rows: ctx.failedRows,
+    total_rows: ctx.processedRows,
+  });
+
+  emit("done", ctx.processedRows, ctx.processedRows);
+
+  // If no new companies were inserted, still ping the resolver once so any
+  // pre-existing unresolved companies attached to this import get processed.
+  if (ctx.resolverWavesQueued === 0) {
+    supabase.functions.invoke("resolve-domains-batch", { body: { importId: ctx.importId } }).catch(() => {});
+  }
+
+  return ctx.importId;
 }
