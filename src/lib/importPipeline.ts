@@ -96,7 +96,14 @@ function parseCsvSync(text: string): ParsedFile {
 }
 
 function parseXlsxSync(buf: ArrayBuffer): ParsedFile {
-  const wb = XLSX.read(buf, { type: "array", dense: true });
+  let wb: XLSX.WorkBook;
+  try {
+    // SheetJS auto-detects BIFF (.xls) vs OOXML (.xlsx) from the buffer.
+    wb = XLSX.read(buf, { type: "array", dense: true });
+  } catch (e: any) {
+    throw new Error("Could not read this Excel file — try re-saving it as .xlsx or .csv");
+  }
+  if (!wb.SheetNames?.length) throw new Error("Excel file has no sheets");
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const rows: string[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", blankrows: false }) as any;
   if (rows.length === 0) return { headers: [], rows: [] };
