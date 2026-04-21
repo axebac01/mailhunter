@@ -350,3 +350,163 @@ export default function JobDetail() {
     </div>
   );
 }
+
+const TIMELINE_EVENT_TYPES: TimelineEventType[] = ["pages_discovered", "page_crawled", "emails_found", "people_extracted", "company_started", "company_finished"];
+type FilterKey = "all" | "discovered" | "crawled" | "emails" | "people";
+const FILTER_TO_EVENTS: Record<FilterKey, TimelineEventType[]> = {
+  all: TIMELINE_EVENT_TYPES,
+  discovered: ["pages_discovered"],
+  crawled: ["page_crawled"],
+  emails: ["emails_found"],
+  people: ["people_extracted"],
+};
+
+interface TimelineRow {
+  id: string;
+  level: string;
+  message: string;
+  createdAt: string;
+  meta: any;
+  event: TimelineEventType | null;
+}
+
+function rowFromDb(r: any): TimelineRow {
+  const ev = r.meta_json?.event;
+  return {
+    id: r.id,
+    level: r.level,
+    message: r.message,
+    createdAt: r.created_at,
+    meta: r.meta_json ?? {},
+    event: TIMELINE_EVENT_TYPES.includes(ev) ? ev : null,
+  };
+}
+
+function JobTimeline({ jobId }: { jobId: string }) {
+  const [rows, setRows] = useState<TimelineRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<FilterKey>("all");
+  const [paused, setPaused] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
+  const pendingRef = useRef<TimelineRow[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const { data } = await supabase
+        .from("crawl_logs")
+        .select("*")
+        .eq("crawl_job_id", jobId)
+        .order("created_at", { ascending: false })
+        .limit(300);
+      if (cancelled) return;
+      setRows((data ?? []).map(rowFromDb).filter((r) => r.event !== null));
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [jobId]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel(`timeline-${jobId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "crawl_logs", filter: `crawl_job_id=eq.${jobId}` }, (payload) => {
+        const row = rowFromDb(payload.new);
+        if (!row.event) return;
+        if (paused) {
+          pendingRef.current = [row, ...pendingRef.current];
+          setPendingCount(pendingRef.current.length);
+        } else {
+          setRows((prev) => [row, ...prev].slice(0, 500));
+        }
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [jobId, paused]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setPaused(el.scrollTop > 60);
+  };
+
+  const flushPending = () => {
+    setRows((prev) => [...pendingRef.current, ...prev].slice(0, 500));
+    pendingRef.current = [];
+    setPendingCount(0);
+    setPaused(false);
+    scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const filtered = useMemo(() => {
+    const allowed = FILTER_TO_EVENTS[filter];
+    return rows.filter((r) => r.event && allowed.includes(r.event));
+  }, [rows, filter]);
+
+  const counts = useMemo(() => {
+    const c = { discovered: 0, crawled: 0, emails: 0, people: 0 };
+    for (const r of rows) {
+      if (r.event === "pages_discovered") c.discovered += r.meta?.count ?? 0;
+      else if (r.event === "page_crawled") c.crawled += 1;
+      else if (r.event === "emails_found") c.emails += (r.meta?.person_emails ?? 0) + (r.meta?.generic_emails ?? 0);
+      else if (r.event === "people_extracted") c.people += r.meta?.count ?? 0;
+    }
+    return c;
+  }, [rows]);
+
+  const chips: { key: FilterKey; label: string; n?: number }[] = [
+    { key: "all", label: "All", n: rows.length },
+    { key: "discovered", label: "Discovered" },
+    { key: "crawled", label: "Crawled", n: counts.crawled },
+    { key: "emails", label: "Emails", n: counts.emails },
+    { key: "people", label: "People", n: counts.people },
+  ];
+
+  return (
+    <SectionCard title="Pipeline timeline" description="Live events from the scraping pipeline" noPadding>
+      <div className="px-5 py-3 border-b border-border flex flex-wrap items-center gap-2">
+        {chips.map((c) => (
+          <button
+            key={c.key}
+            onClick={() => setFilter(c.key)}
+            className={cn(
+              "text-xs px-2.5 py-1 rounded-full border transition-colors",
+              filter === c.key
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-background text-muted-foreground border-border hover:bg-muted",
+            )}
+          >
+            {c.label}{typeof c.n === "number" ? ` · ${c.n}` : ""}
+          </button>
+        ))}
+        <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
+          <span><Globe className="inline h-3 w-3 mr-1" />{counts.discovered} discovered</span>
+          <span><Activity className="inline h-3 w-3 mr-1" />{counts.crawled} crawled</span>
+          <span><Mail className="inline h-3 w-3 mr-1" />{counts.emails} emails</span>
+          <span><Users className="inline h-3 w-3 mr-1" />{counts.people} people</span>
+        </div>
+      </div>
+
+      {pendingCount > 0 && (
+        <div className="sticky top-0 z-10 px-5 py-2 bg-primary/10 border-b border-border flex items-center justify-center">
+          <button onClick={flushPending} className="text-xs font-medium text-primary hover:underline">
+            ↑ {pendingCount} new event{pendingCount === 1 ? "" : "s"} — click to show
+          </button>
+        </div>
+      )}
+
+      <div ref={scrollRef} onScroll={onScroll} className="divide-y divide-border max-h-[600px] overflow-auto scrollbar-thin">
+        {loading ? (
+          <div className="px-5 py-8 text-sm text-muted-foreground text-center">Loading timeline…</div>
+        ) : filtered.length === 0 ? (
+          <EmptyState description="No timeline events yet. Start the job to see the pipeline live." />
+        ) : (
+          filtered.map((r) => (
+            <TimelineEvent key={r.id} event={r.event!} createdAt={r.createdAt} meta={r.meta} level={r.level} />
+          ))
+        )}
+      </div>
+    </SectionCard>
+  );
+}
