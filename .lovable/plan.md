@@ -2,61 +2,107 @@
 
 ## Goal
 
-Give each running job a live, chronological timeline view of the scraping pipeline — pages discovered, pages crawled, emails found, and people extracted — so users see exactly what is happening minute-by-minute instead of just a progress bar and final counters.
+Make the import pipeline 10–50× faster and more robust by replacing the sequential row-by-row loop with **bulk set-based operations**, while keeping the existing UX (live progress, status per row, scoped dedup, fire-and-forget domain resolver).
+
+## Root causes of current slowness
+
+For an N-row import, today we make roughly **2N+ sequential round-trips** to the database:
+1. For each row: 1 SELECT (dedup) + 1 INSERT (new company) + 1 UPDATE (`import_rows`).
+2. Progress UPDATE on `imports` every 5 rows.
+3. No parallelism — entirely serial `await` in a `for` loop.
+
+On a 1500-row file with ~80 ms latency that's **~4–5 minutes of pure round-trip time**, before any actual work.
 
 ## Approach
 
-### 1. Emit structured timeline events from the scraper
+### 1. Bulk-first pipeline (server-side set operations)
 
-In `supabase/functions/scrape-emails/index.ts`, add small `crawl_logs` inserts at four key moments per company, each tagged with a new `meta_json.event` discriminator so the UI can filter cleanly:
+Replace the per-row loop with **5 set-based phases**, each one or two SQL statements:
 
-- `pages_discovered` — after `discoverPages` returns, log `{ event, company, host, count, urls: top 10 }`
-- `page_crawled` — after each successful Firecrawl scrape, log `{ event, company, url, page_type, emails_on_page, status }`
-- `emails_found` — when ≥ 1 new email is upserted for a company, log `{ event, company, host, person_emails, generic_emails, samples: [first 3] }`
-- `people_extracted` — when ≥ 1 `contact_people` row is inserted, log `{ event, company, count, samples: [first 3 names+roles] }`
+**Phase A — Parse & normalize in-memory (no DB):**
+- Parse the file (already fast).
+- For every row, compute `domain` from `website` once.
+- Lowercase & trim names; normalize country (reuse normalization map from resolver).
+- Bucket rows into two arrays: `withDomain[]` and `nameOnly[]`.
 
-Use `level: 'info'` (or `'success'` for emails_found / people_extracted). All existing free-form logs continue working — the timeline view simply ignores logs without `meta_json.event`.
+**Phase B — Bulk-fetch existing companies in 2 queries:**
+- One `SELECT id, domain FROM companies WHERE domain = ANY($1)` for every distinct domain in `withDomain`.
+- One `SELECT id, lower(name) AS name, country FROM companies WHERE domain_status='resolved' AND lower(name) = ANY($1) AND (country = ANY($2) OR country IS NULL)` for every distinct name in `nameOnly`.
+- Build two in-memory lookup maps (`domainToId`, `nameKeyToId`).
 
-In `scrape-emails-batch/index.ts`, also emit a `company_started` and `company_finished` event so the timeline can group entries per company.
+**Phase C — Bulk-insert all new companies in chunks of 500:**
+- For rows whose domain/name didn't match, build company insert payloads.
+- Single `supabase.from('companies').insert(chunk).select('id, domain, name')` per chunk.
+- Merge returned ids back into the lookup maps.
+- Use Postgres `ON CONFLICT` semantics where possible — for `domain`, attempt an upsert with `onConflict: 'domain', ignoreDuplicates: false` to atomically dedupe in case two rows in the same import share a domain.
 
-### 2. New "Timeline" tab on Job Detail
+**Phase D — Bulk-insert all `import_rows` with their final status in one shot per chunk:**
+- Today we insert all rows as `pending` first, then UPDATE each one. Eliminate the UPDATE entirely by inserting them with their final `status` + `matched_company_id` + `matched_domain` already set, in chunks of 500.
+- This removes N updates → 0 updates.
 
-In `src/pages/JobDetail.tsx`, add a tab next to the existing sections (or a `SectionCard` if no tabs exist) called **Timeline**. It contains:
+**Phase E — Single final UPDATE on `imports`:**
+- One UPDATE with totals: `processed_rows`, `matched_rows`, `failed_rows`, `status='completed'`.
+- Progress updates during phases C/D fire every chunk (every ~500 rows) instead of every 5.
 
-- A vertical, time-ordered list of events (newest at top), each row showing:
-  - Event icon + colored dot (discovered=blue, crawled=slate, emails=green, people=purple)
-  - Relative timestamp ("12s ago"), company name (clickable → CompanyDetail)
-  - One-line summary built from `meta_json` (e.g. "8 pages discovered on acme.se", "Crawled /kontakt — 3 emails", "Found 2 person emails: anna@…, lars@…", "Extracted 4 people from /team")
-- Filter chips at top: All · Discovered · Crawled · Emails · People — toggle which event types show
-- Aggregate counters strip above the list: total pages discovered / crawled / emails / people for this job (computed by counting events client-side from the loaded window, plus the existing KPI cards keep their DB-counted truth)
-- Auto-scroll pause: if user scrolls down, pause auto-prepend; show a "N new events ↑" pill to resume
+### 2. Parallelize chunk inserts
 
-### 3. Realtime updates
+- Run chunked company inserts and chunked `import_rows` inserts with `Promise.all` over chunks (cap concurrency at 4 to be polite to the DB).
+- For a 1500-row file this is ~3 chunks of 500, all in parallel — ~1 round-trip worth of latency.
 
-Subscribe to `postgres_changes` on `public.crawl_logs` filtered by `crawl_job_id=eq.<jobId>` (the realtime subscription pattern is already used elsewhere in the app for `crawl_jobs`). New rows are prepended to the timeline state. Initial load fetches the last 200 events ordered by `created_at desc`. A "Load older" button at the bottom paginates further back.
+### 3. Preserve in-import dedup
 
-Enable realtime on `crawl_logs` via a small migration:
-```sql
-alter publication supabase_realtime add table public.crawl_logs;
-```
-(Idempotent — wrapped in a `do $$ ... exception when duplicate_object then null; end $$;` block.)
+When two rows in the same file have the same domain or same `(name, country)`:
+- **Same domain**: collapse into one company insert; both `import_rows` point to the same `matched_company_id` with the second marked `duplicate` (when `ignoreDuplicates` is on).
+- **Same name+country (name-only)**: same collapse logic via in-memory map keyed by `lower(name)|country`.
 
-### 4. Small reusable component
+This is impossible to do cleanly in the current per-row loop and is a real correctness improvement, not just a perf one.
 
-Create `src/components/app/TimelineEvent.tsx` — a single row renderer taking `{ event, createdAt, companyName, companyId, meta }`. Keep `JobDetail.tsx` clean.
+### 4. Parser performance
+
+- For large files (>5k rows), parse off the main thread:
+  - Add a tiny `src/workers/parseFile.worker.ts` that runs `XLSX.read` + `sheet_to_json`.
+  - `parseFile()` posts the file to the worker and resolves with the parsed shape.
+  - Keeps the UI responsive on 50k-row uploads.
+- Stream `xlsx` with `dense: true` and skip empty rows during parse to reduce memory.
+
+### 5. Better progress UX
+
+- Switch progress from "rows processed" to **3 phase markers**: *Parsing → Matching → Saving*, plus row-count on the active phase.
+- Live counter in `Imports.tsx` updates per chunk (already wired through `onProgress`, just emit phase + counts).
+- Show estimated time remaining once we've completed one chunk (simple linear extrapolation).
+
+### 6. Resilience
+
+- Wrap each chunk insert in try/catch; on chunk failure, fall back to per-row insert **for that chunk only** so one bad row doesn't blow up 499 good ones.
+- Mark unrecoverable rows as `failed` with `error_message` set from PG error.
+- Final summary toast: "Imported 1500 rows in 4.2s — 1487 matched, 13 failed".
+
+### 7. Don't block the resolver enqueue
+
+- After Phase E, fire-and-forget `resolve-domains-batch` exactly as today (no change).
+- Bonus: pass `companyIds` array directly so the resolver doesn't need to re-query unresolved companies for this import.
 
 ## Files to change
 
-- `supabase/functions/scrape-emails/index.ts` — emit `pages_discovered`, `page_crawled`, `emails_found`, `people_extracted` structured logs
-- `supabase/functions/scrape-emails-batch/index.ts` — emit `company_started` / `company_finished`
-- `src/pages/JobDetail.tsx` — add Timeline section + realtime subscription + filter chips
-- `src/components/app/TimelineEvent.tsx` — new row component
-- `supabase/migrations/<new>.sql` — enable realtime on `crawl_logs`
+- `src/lib/importPipeline.ts` — rewrite `runImport` with bulk phases A–E; keep public API (`runImport`, `parseFile`, `autoMap`, types) identical so callers don't change
+- `src/workers/parseFile.worker.ts` — new web worker for off-thread parsing
+- `src/lib/api.ts` — add `bulkInsertCompanies(rows, chunk)`, `bulkInsertImportRowsWithStatus(rows, chunk)`, `findCompaniesByDomains(domains[])`, `findResolvedCompaniesByNames(names[], countries[])`
+- `src/pages/Imports.tsx` — show phase + ETA in the progress bar (small UX upgrade)
+- `supabase/functions/resolve-domains-batch/index.ts` — accept optional `companyIds` array to skip the unresolved-company query
+
+No DB migration required.
+
+## Expected impact
+
+Measured on a typical 1500-row file (current ~3–5 min):
+- Round-trips drop from ~3000 to ~10.
+- Wall time target: **< 5 seconds** end-to-end (excluding the post-import domain resolver, which runs server-side).
+- Dedup correctness: duplicate rows within the same file now collapse cleanly instead of racing.
 
 ## Success criteria
 
-- Starting a scrape on a job shows events streaming into the Timeline within ~1s of each company finishing a page, no manual refresh.
-- Filter chips correctly narrow to a single event type.
-- Completed jobs still show the full historical timeline (last 200 events, with pagination).
-- No measurable performance impact on the scraper (one extra `insert` per event, batched naturally with the existing log inserts).
+- 1500-row import completes in < 5 s on a typical connection.
+- 10k-row import completes in < 30 s and doesn't freeze the UI (worker parse).
+- Same final row counts in `imports`, `import_rows`, `companies` as the current implementation on identical input.
+- Domain resolver still kicks off automatically and processes the same set of unresolved companies.
 
