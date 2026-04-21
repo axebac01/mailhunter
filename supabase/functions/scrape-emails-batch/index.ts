@@ -101,6 +101,8 @@ Deno.serve(async (req) => {
           if (cur?.status !== "running") return;
 
           try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), PER_COMPANY_TIMEOUT_MS);
             const res = await fetch(`${SUPABASE_URL}/functions/v1/scrape-emails`, {
               method: "POST",
               headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
@@ -111,9 +113,12 @@ Deno.serve(async (req) => {
                   personEmails: job.include_person_emails,
                   phones: job.include_phones,
                   contactForms: job.include_contact_forms,
+                  personNames: job.include_contact_person_names,
                 },
               }),
+              signal: ctrl.signal,
             });
+            clearTimeout(timer);
             if (!res.ok) {
               const text = await res.text().catch(() => "");
               await supabase.from("crawl_logs").insert({
@@ -122,13 +127,14 @@ Deno.serve(async (req) => {
               });
             }
           } catch (e: any) {
+            const aborted = e?.name === "AbortError";
             await supabase.from("crawl_logs").insert({
               crawl_job_id: jobId, level: "error",
-              message: `Scrape threw for ${c.domain}: ${e?.message ?? e}`,
+              message: aborted ? `Scrape timed out (>${PER_COMPANY_TIMEOUT_MS}ms) for ${c.domain}` : `Scrape threw for ${c.domain}: ${e?.message ?? e}`,
             });
           }
           scraped++;
-          if (scraped % 2 === 0 || scraped === todo.length) await refreshCounters();
+          if (scraped % 10 === 0 || scraped === todo.length) await refreshCounters();
         }, CONCURRENCY);
 
         await refreshCounters();
