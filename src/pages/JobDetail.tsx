@@ -287,15 +287,22 @@ export default function JobDetail() {
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <JobStatusBadge status={j.status} />
-              {pendingAction && (
-                <span className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
-                  pendingAction.kind === "pausing" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground"
-                )}>
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  {pendingAction.kind === "pausing" ? "Pausing…" : "Stopping…"}
-                </span>
-              )}
+              {pendingAction && (() => {
+                const remainingMs = Math.max(0, pendingAction.estimatedWaveMs - (Date.now() - pendingAction.startedAt));
+                const secs = Math.ceil(remainingMs / 1000);
+                return (
+                  <span className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
+                    pendingAction.kind === "pausing" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground"
+                  )}>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {pendingAction.kind === "pausing" ? "Pausing…" : "Stopping…"}
+                    <span className="ml-1 tabular-nums opacity-80">
+                      {remainingMs > 0 ? `~${secs}s left` : "finishing up…"}
+                    </span>
+                  </span>
+                );
+              })()}
             </div>
             <span className="text-sm text-muted-foreground">{j.progress}% complete</span>
           </div>
