@@ -117,6 +117,21 @@ export default function JobDetail() {
     onError: (e: any) => toast.error(e?.message ?? "Resolve domains failed"),
   });
 
+  const resumeScraping = useMutation({
+    mutationFn: async () => {
+      await api.updateJobStatus(id, "running");
+      const { data, error } = await supabase.functions.invoke("scrape-emails-batch", { body: { jobId: id } });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      toast.success("Resumed scraping");
+      qc.invalidateQueries({ queryKey: ["job", id] });
+      qc.invalidateQueries({ queryKey: ["logs", id] });
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Resume failed"),
+  });
+
   useEffect(() => () => {/* keep simulator running across navigations */}, []);
 
   if (job.isLoading) return <div className="p-6">Loading…</div>;
