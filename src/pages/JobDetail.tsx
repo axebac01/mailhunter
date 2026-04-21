@@ -30,6 +30,48 @@ export default function JobDetail() {
   const qc = useQueryClient();
 
   const job = useQuery({ queryKey: ["job", id], queryFn: () => api.getJob(id), refetchInterval: 2500 });
+
+  const [pendingAction, setPendingAction] = useState<{ kind: "pausing" | "stopping"; startedAt: number } | null>(null);
+
+  // Lightweight poll for the latest log row while a pause/stop is pending
+  const latestLog = useQuery({
+    queryKey: ["latestLog", id, pendingAction?.startedAt],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("crawl_logs")
+        .select("message, created_at")
+        .eq("crawl_job_id", id)
+        .order("created_at", { ascending: false })
+        .limit(5);
+      return data ?? [];
+    },
+    refetchInterval: pendingAction ? 3000 : false,
+    enabled: !!pendingAction,
+  });
+
+  // Detect worker exit: matching log line newer than click, or 60s safety timeout
+  useEffect(() => {
+    if (!pendingAction) return;
+    const needle = pendingAction.kind === "pausing" ? "paused by user" : "stopped by user";
+    const rows = latestLog.data ?? [];
+    const exited = rows.some((r: any) => {
+      const ts = new Date(r.created_at).getTime();
+      return ts >= pendingAction.startedAt - 1000 && typeof r.message === "string" && r.message.toLowerCase().includes(needle);
+    });
+    if (exited) {
+      setPendingAction(null);
+      return;
+    }
+    const elapsed = Date.now() - pendingAction.startedAt;
+    const remaining = 60000 - elapsed;
+    if (remaining <= 0) {
+      setPendingAction(null);
+      toast("Worker may still be finishing — refresh in a moment if needed.");
+      return;
+    }
+    const t = setTimeout(() => setPendingAction((p) => (p === pendingAction ? null : p)), remaining);
+    return () => clearTimeout(t);
+  }, [pendingAction, latestLog.data]);
   const allJobs = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
   const allContacts = useQuery({ queryKey: ["contacts"], queryFn: () => api.listContacts(), refetchInterval: 2500 });
   const allPeople = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople(), refetchInterval: 2500 });
@@ -157,18 +199,20 @@ export default function JobDetail() {
         description={`${j.industry ?? "—"} · ${j.country ?? "—"}`}
         actions={
           <>
-            <Button variant="outline" size="sm" disabled={j.status === "running" || resumeScraping.isPending} onClick={() => {
+            <Button variant="outline" size="sm" disabled={j.status === "running" || resumeScraping.isPending || !!pendingAction} onClick={() => {
               if (j.status === "paused" || j.status === "stopped") {
                 resumeScraping.mutate();
               } else {
                 updateStatus.mutate("running");
               }
             }}><Play className="h-4 w-4" /> Start</Button>
-            <Button variant="outline" size="sm" disabled={j.status !== "running"} onClick={() => {
+            <Button variant="outline" size="sm" disabled={j.status !== "running" || !!pendingAction} onClick={() => {
+              setPendingAction({ kind: "pausing", startedAt: Date.now() });
               updateStatus.mutate("paused");
               toast("Pausing scraper — current batch will finish within ~45s");
             }}><Pause className="h-4 w-4" /> Pause</Button>
-            <Button variant="outline" size="sm" disabled={j.status === "stopped"} onClick={() => {
+            <Button variant="outline" size="sm" disabled={j.status === "stopped" || !!pendingAction} onClick={() => {
+              setPendingAction({ kind: "stopping", startedAt: Date.now() });
               updateStatus.mutate("stopped");
               toast("Stopping scraper");
             }}><Square className="h-4 w-4" /> Stop</Button>
@@ -217,7 +261,18 @@ export default function JobDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         <SectionCard title="Status" className="lg:col-span-2">
           <div className="flex items-center justify-between mb-3">
-            <JobStatusBadge status={j.status} />
+            <div className="flex items-center gap-2">
+              <JobStatusBadge status={j.status} />
+              {pendingAction && (
+                <span className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
+                  pendingAction.kind === "pausing" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground"
+                )}>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {pendingAction.kind === "pausing" ? "Pausing…" : "Stopping…"}
+                </span>
+              )}
+            </div>
             <span className="text-sm text-muted-foreground">{j.progress}% complete</span>
           </div>
           <ProgressBar value={j.progress} />
@@ -268,7 +323,19 @@ export default function JobDetail() {
         </div>
       )}
 
-      {(j.status === "paused" || j.status === "stopped") && (
+      {pendingAction ? (
+        <div className={cn(
+          "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
+          pendingAction.kind === "pausing" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
+        )}>
+          <Loader2 className={cn("h-4 w-4 animate-spin", pendingAction.kind === "pausing" ? "text-warning" : "text-muted-foreground")} />
+          <span>
+            {pendingAction.kind === "pausing"
+              ? "Pausing scraper — waiting for the current batch to finish (up to ~45s)…"
+              : "Stopping scraper — waiting for the current batch to finish (up to ~45s)…"}
+          </span>
+        </div>
+      ) : (j.status === "paused" || j.status === "stopped") && (
         <div className={cn(
           "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
           j.status === "paused" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
