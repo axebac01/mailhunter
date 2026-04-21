@@ -135,6 +135,24 @@ export default function ImportDetail() {
     onError: (e: any) => toast.error(e?.message ?? "Failed to create job"),
   });
 
+  const restartMut = useMutation({
+    mutationFn: () => restartImport(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["import", id] });
+      qc.invalidateQueries({ queryKey: ["importRows", id] });
+      qc.invalidateQueries({ queryKey: ["imports"] });
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+      toast.success("Import restarted");
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Restart failed"),
+  });
+
+  const handleStop = () => {
+    cancelImport(id);
+    toast.message("Stopping import…");
+    qc.invalidateQueries({ queryKey: ["import", id] });
+  };
+
   if (importQ.isLoading) {
     return <div className="p-6 max-w-[1600px] mx-auto"><p className="text-sm text-muted-foreground">Loading…</p></div>;
   }
