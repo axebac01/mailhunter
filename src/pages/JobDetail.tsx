@@ -480,7 +480,29 @@ function JobTimeline({ jobId }: { jobId: string }) {
   ];
 
   return (
-    <SectionCard title="Pipeline timeline" description="Live events from the scraping pipeline" noPadding>
+    <div className="space-y-4">
+      {deferred && (() => {
+        const processed = deferred.meta?.processed ?? 0;
+        const remaining = deferred.meta?.remaining ?? 0;
+        const total = deferred.meta?.total ?? (processed + remaining);
+        const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+        return (
+          <div className="rounded-md border border-warning/40 bg-warning/5 px-4 py-3">
+            <div className="flex items-center gap-2 mb-2">
+              <Loader2 className="h-4 w-4 text-warning animate-spin" />
+              <span className="font-medium text-sm text-foreground">
+                Domain resolution in progress — {remaining} compan{remaining === 1 ? "y" : "ies"} remaining
+              </span>
+              <span className="ml-auto text-xs text-muted-foreground">{processed}/{total} · {pct}%</span>
+            </div>
+            <Progress value={pct} className="h-1.5" />
+            <p className="text-xs text-muted-foreground mt-2">
+              Last batch processed {deferred.meta?.wave_seconds ?? 0}s ago · continuing in background…
+            </p>
+          </div>
+        );
+      })()}
+      <SectionCard title="Pipeline timeline" description="Live events from the scraping pipeline" noPadding>
       <div className="px-5 py-3 border-b border-border flex flex-wrap items-center gap-2">
         {chips.map((c) => (
           <button
