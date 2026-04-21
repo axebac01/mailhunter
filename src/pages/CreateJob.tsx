@@ -32,14 +32,15 @@ export default function CreateJob() {
   const uploadMut = useMutation({
     mutationFn: async (f: File) => {
       const parsed = await parseFile(f);
-      if (parsed.headers.length === 0) {
+      const headers = parsed.kind === "buffered" ? parsed.parsed.headers : parsed.headers;
+      if (headers.length === 0) {
         throw new Error("File appears to be empty.");
       }
-      const mapping = autoMap(parsed.headers);
+      const mapping = autoMap(headers);
       // Fallback: if auto-detection fails, treat the first column as the company name.
       if (!Object.values(mapping).includes("company_name")) {
-        mapping[parsed.headers[0]] = "company_name";
-        toast.message(`Using "${parsed.headers[0]}" as the company name column`);
+        mapping[headers[0]] = "company_name";
+        toast.message(`Using "${headers[0]}" as the company name column`);
       }
       return runImport({
         file: f,
