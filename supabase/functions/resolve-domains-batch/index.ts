@@ -557,9 +557,17 @@ Deno.serve(async (req) => {
 
     // Schedule continuation in the background (does NOT block the response)
     if (remaining.length > 0 && !paymentErr) {
+      const waveSeconds = Math.round((Date.now() - startedAt) / 1000);
       if (jobId) await supabase.from("crawl_logs").insert({
         crawl_job_id: jobId, level: "info",
         message: `Time budget reached — continuing ${remaining.length} more companies in the background…`,
+        meta_json: {
+          event: "resolve_deferred",
+          processed, resolved, failed,
+          remaining: remaining.length,
+          total: todo.length,
+          wave_seconds: waveSeconds,
+        },
       });
       const continuation = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/resolve-domains-batch`, {
         method: "POST",
@@ -580,6 +588,11 @@ Deno.serve(async (req) => {
         message: paymentErr
           ? "Firecrawl returned 402 (insufficient credits) — top up to continue."
           : `Domain resolution complete: ${resolved} resolved, ${failed} failed.`,
+        meta_json: {
+          event: "resolve_completed",
+          resolved, failed, total: todo.length,
+          payment_required: paymentErr,
+        },
       });
     }
 
