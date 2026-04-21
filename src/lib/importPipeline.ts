@@ -126,11 +126,13 @@ export async function runImport(args: {
             name: ir.company_name,
             domain,
             website: ir.website,
-            country: ir.country,
+            country: ir.country ?? defaultCountry,
             industry: ir.industry,
             notes: ir.notes,
             source_url: ir.website,
-          }).select("id").single();
+            created_by_job_id: createdByJobId,
+            domain_status: "resolved",
+          } as any).select("id").single();
           if (error) { status = "failed"; failed++; }
           else { companyId = created.id; status = "matched"; matched++; }
         }
