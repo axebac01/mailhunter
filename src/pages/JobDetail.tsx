@@ -199,18 +199,20 @@ export default function JobDetail() {
         description={`${j.industry ?? "—"} · ${j.country ?? "—"}`}
         actions={
           <>
-            <Button variant="outline" size="sm" disabled={j.status === "running" || resumeScraping.isPending} onClick={() => {
+            <Button variant="outline" size="sm" disabled={j.status === "running" || resumeScraping.isPending || !!pendingAction} onClick={() => {
               if (j.status === "paused" || j.status === "stopped") {
                 resumeScraping.mutate();
               } else {
                 updateStatus.mutate("running");
               }
             }}><Play className="h-4 w-4" /> Start</Button>
-            <Button variant="outline" size="sm" disabled={j.status !== "running"} onClick={() => {
+            <Button variant="outline" size="sm" disabled={j.status !== "running" || !!pendingAction} onClick={() => {
+              setPendingAction({ kind: "pausing", startedAt: Date.now() });
               updateStatus.mutate("paused");
               toast("Pausing scraper — current batch will finish within ~45s");
             }}><Pause className="h-4 w-4" /> Pause</Button>
-            <Button variant="outline" size="sm" disabled={j.status === "stopped"} onClick={() => {
+            <Button variant="outline" size="sm" disabled={j.status === "stopped" || !!pendingAction} onClick={() => {
+              setPendingAction({ kind: "stopping", startedAt: Date.now() });
               updateStatus.mutate("stopped");
               toast("Stopping scraper");
             }}><Square className="h-4 w-4" /> Stop</Button>
