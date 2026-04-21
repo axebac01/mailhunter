@@ -1,57 +1,48 @@
 
 
-## Problem
+## Goal
 
-You uploaded a 495-row file on `/jobs/new`, then created the job. All 495 companies are stuck at `domain_status = 'unresolved'`, the scrape ran and logged "0 companies with resolved domains", and 0 contacts were found.
+Show live progress for running jobs directly in the Jobs table row — a thin progress bar plus three counters (companies processed, contacts found, pages crawled) that update in real time without manual refresh.
 
-Two distinct bugs are causing this:
+## Approach
 
-### Bug 1 — Domain resolution never runs for companies created during the Create Job upload
+### 1. Realtime subscription on `crawl_jobs`
+In `src/pages/Jobs.tsx`, add a `useEffect` that subscribes to Postgres changes on `public.crawl_jobs` (UPDATE events). On each change, update the React Query cache for `["jobs"]` so the row re-renders with fresh `progress`, `companies_found`, `contacts_found`, and `pages_crawled` values.
 
-`runImport` fires `resolve-domains-batch` only at the moment the file is uploaded. On the Create Job page, the import is created with `crawl_job_id = null`, the job is built afterwards, and nothing ever re-triggers resolution. Even if the batch call did succeed, its log lines wouldn't show up under your job because no `jobId` was passed.
-
-### Bug 2 — `resolve-domains-batch` likely crashed at boot
-
-The function imports `corsHeaders` from `https://esm.sh/@supabase/supabase-js@2.95.0/cors`, which is not a real export of supabase-js. That throws on boot, so the invocation from `runImport` silently failed. Confirmed: there are zero info/result logs from that function for any recent job, only boot/shutdown.
-
-## Fix
-
-### 1. Fix `resolve-domains-batch` boot crash
-Replace the bad import with a local `corsHeaders` constant (standard pattern used in your other edge functions):
-```ts
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+Requires a one-line migration to enable realtime on the table:
+```sql
+ALTER PUBLICATION supabase_realtime ADD TABLE public.crawl_jobs;
+ALTER TABLE public.crawl_jobs REPLICA IDENTITY FULL;
 ```
 
-### 2. Trigger domain resolution when the job is created from an uploaded import
-In `src/pages/CreateJob.tsx`, after `api.updateImport(importId, { crawl_job_id: job.id })`, invoke `resolve-domains-batch` with `{ importId, jobId: job.id }`. This:
-- runs server-side so the user can leave the page
-- attaches logs to the job (you'll see "Resolving domains for N companies…")
-- resolves all unresolved companies for that import
+### 2. Inline progress UI in the table row
+Replace the single static "Companies / Contacts" cells with a richer block that, **for active jobs only** (`running`, `scheduled`, `paused`), shows:
+- A thin `ProgressBar` (already exists at `src/components/app/ProgressBar.tsx`) bound to `j.progress`
+- Three compact counters underneath: `Companies {processed}/{max}` · `Contacts {n}` · `Pages {n}`
 
-Fire-and-forget (don't block job creation).
+For non-active jobs (completed/failed/draft/stopped), keep the existing right-aligned numeric cells unchanged.
 
-### 3. Add a "Resolve domains now" action on Job Detail
-For jobs already in this stuck state (like the current one), add a button on `/jobs/:id` that calls `resolve-domains-batch` with `{ jobId }`. The function already supports filtering unresolved companies via `jobId` → its imports → import_rows. This lets you recover the current 495-company job without re-uploading.
+### 3. Layout adjustment
+Merge the current "Companies" and "Contacts" right-aligned columns into a single wider "Progress" column so the bar + counters fit cleanly. Add a "Pages" value inline rather than a new column to avoid horizontal overflow.
 
-### 4. Auto-trigger resolution before scrape if needed (defensive)
-In the scrape pipeline, if it sees "0 companies with resolved domains" but unresolved ones exist for the job, log a clear message telling the user to click "Resolve domains" instead of silently doing nothing. (Optional — keep scope small if you prefer.)
+```text
+| Job name | Industry | Country | Status | Created | Last run | Schedule | Progress                              | ⋮ |
+|          |          |         | running|         |          |          | ▓▓▓▓▓░░░ 62%                          |   |
+|          |          |         |        |         |          |          | 124/200 companies · 38 contacts · 154 pages |
+```
+
+### 4. Same treatment on Dashboard "Recent jobs"
+Optional small touch: the existing Recent jobs list on `Dashboard.tsx` already benefits from the realtime cache invalidation automatically — no extra UI change required, but the badge/timestamps will refresh live.
 
 ## Files to change
 
-- `supabase/functions/resolve-domains-batch/index.ts` — fix `corsHeaders` import
-- `src/pages/CreateJob.tsx` — invoke `resolve-domains-batch` after job creation when `sourceMode === "uploaded"`
-- `src/pages/JobDetail.tsx` — add "Resolve domains" button, calls the function with `{ jobId }`
-
-## Recovery for the current job
-
-After deploying, click the new "Resolve domains" button on `/jobs/5f6d2017…`. It will resolve all 495 companies in the background (concurrency 5, ~1–2 min), then you can re-run the scrape.
+- `supabase/migrations/<new>.sql` — enable realtime on `crawl_jobs`
+- `src/pages/Jobs.tsx` — add realtime subscription, replace Companies/Contacts cells with Progress cell
+- (no changes needed to `ProgressBar.tsx` — reused as-is)
 
 ## Success criteria
 
-- New uploads → companies get domains resolved automatically and the job's logs show progress
-- Existing stuck jobs can be recovered with one click
-- Scrape no longer reports "0 companies with resolved domains" after resolution finishes
+- Start a job → its row in `/jobs` shows a moving progress bar and counters incrementing every few seconds with no page refresh
+- Completed/draft/failed jobs keep showing final numeric totals as today
+- No extra polling; updates come purely from Supabase Realtime
 
