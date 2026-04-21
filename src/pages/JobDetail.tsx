@@ -261,7 +261,18 @@ export default function JobDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         <SectionCard title="Status" className="lg:col-span-2">
           <div className="flex items-center justify-between mb-3">
-            <JobStatusBadge status={j.status} />
+            <div className="flex items-center gap-2">
+              <JobStatusBadge status={j.status} />
+              {pendingAction && (
+                <span className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
+                  pendingAction.kind === "pausing" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground"
+                )}>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {pendingAction.kind === "pausing" ? "Pausing…" : "Stopping…"}
+                </span>
+              )}
+            </div>
             <span className="text-sm text-muted-foreground">{j.progress}% complete</span>
           </div>
           <ProgressBar value={j.progress} />
