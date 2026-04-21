@@ -352,14 +352,16 @@ export default function JobDetail() {
   );
 }
 
-const TIMELINE_EVENT_TYPES: TimelineEventType[] = ["pages_discovered", "page_crawled", "emails_found", "people_extracted", "company_started", "company_finished"];
-type FilterKey = "all" | "discovered" | "crawled" | "emails" | "people";
+const TIMELINE_EVENT_TYPES: TimelineEventType[] = ["pages_discovered", "page_crawled", "emails_found", "people_extracted", "company_started", "company_finished", "resolve_started", "resolve_deferred", "resolve_completed"];
+type FilterKey = "all" | "discovered" | "crawled" | "emails" | "people" | "resolver";
+const RESOLVER_EVENTS: TimelineEventType[] = ["resolve_started", "resolve_deferred", "resolve_completed"];
 const FILTER_TO_EVENTS: Record<FilterKey, TimelineEventType[]> = {
   all: TIMELINE_EVENT_TYPES,
   discovered: ["pages_discovered"],
   crawled: ["page_crawled"],
   emails: ["emails_found"],
   people: ["people_extracted"],
+  resolver: RESOLVER_EVENTS,
 };
 
 interface TimelineRow {
