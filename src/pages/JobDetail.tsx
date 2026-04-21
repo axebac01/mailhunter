@@ -157,9 +157,21 @@ export default function JobDetail() {
         description={`${j.industry ?? "—"} · ${j.country ?? "—"}`}
         actions={
           <>
-            <Button variant="outline" size="sm" onClick={() => updateStatus.mutate("running")}><Play className="h-4 w-4" /> Start</Button>
-            <Button variant="outline" size="sm" onClick={() => updateStatus.mutate("paused")}><Pause className="h-4 w-4" /> Pause</Button>
-            <Button variant="outline" size="sm" onClick={() => updateStatus.mutate("stopped")}><Square className="h-4 w-4" /> Stop</Button>
+            <Button variant="outline" size="sm" disabled={j.status === "running" || resumeScraping.isPending} onClick={() => {
+              if (j.status === "paused" || j.status === "stopped") {
+                resumeScraping.mutate();
+              } else {
+                updateStatus.mutate("running");
+              }
+            }}><Play className="h-4 w-4" /> Start</Button>
+            <Button variant="outline" size="sm" disabled={j.status !== "running"} onClick={() => {
+              updateStatus.mutate("paused");
+              toast("Pausing scraper — current batch will finish within ~45s");
+            }}><Pause className="h-4 w-4" /> Pause</Button>
+            <Button variant="outline" size="sm" disabled={j.status === "stopped"} onClick={() => {
+              updateStatus.mutate("stopped");
+              toast("Stopping scraper");
+            }}><Square className="h-4 w-4" /> Stop</Button>
             <Button variant="outline" size="sm" onClick={() => dup.mutate()}><Copy className="h-4 w-4" /> Duplicate</Button>
             {j.sourceType === "uploaded" && (
               <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate(undefined)} disabled={resolveDomains.isPending}>
@@ -253,6 +265,17 @@ export default function JobDetail() {
           {domainStats.data.failed > 0 && (
             <span className="text-xs text-muted-foreground ml-auto">Companies without a real domain are skipped — no fake emails are generated.</span>
           )}
+        </div>
+      )}
+
+      {(j.status === "paused" || j.status === "stopped") && (
+        <div className={cn(
+          "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
+          j.status === "paused" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
+        )}>
+          {j.status === "paused"
+            ? <span>Scraper paused. Click <strong>Start</strong> to resume from where it left off.</span>
+            : <span>Scraper stopped. Click <strong>Start</strong> to resume.</span>}
         </div>
       )}
 

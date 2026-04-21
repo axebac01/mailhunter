@@ -64,6 +64,10 @@ Deno.serve(async (req) => {
 
     // Stop if user paused/stopped the job
     if (job.status !== "running") {
+      await supabase.from("crawl_logs").insert({
+        crawl_job_id: jobId, level: "info",
+        message: `Scraping ${job.status} by user — worker exiting, no re-invoke scheduled.`,
+      });
       return new Response(JSON.stringify({ skipped: true, reason: `status=${job.status}` }), {
         status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -251,7 +255,13 @@ Deno.serve(async (req) => {
 
         // Re-check job status & whether more work is pending
         const { data: final } = await supabase.from("crawl_jobs").select("status").eq("id", jobId).maybeSingle();
-        if (final?.status !== "running") return;
+        if (final?.status !== "running") {
+          await supabase.from("crawl_logs").insert({
+            crawl_job_id: jobId, level: "info",
+            message: `Scraping ${final?.status ?? "halted"} by user after wave — not scheduling re-invoke.`,
+          });
+          return;
+        }
 
         // Are there still companies awaiting domain resolution?
         const { data: stillCompanies } = await supabase
