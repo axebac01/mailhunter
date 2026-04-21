@@ -231,12 +231,12 @@ export default function JobDetail() {
               }
             }}><Play className="h-4 w-4" /> Start</Button>
             <Button variant="outline" size="sm" disabled={j.status !== "running" || !!pendingAction} onClick={() => {
-              setPendingAction({ kind: "pausing", startedAt: Date.now() });
+              setPendingAction({ kind: "pausing", startedAt: Date.now(), estimatedWaveMs: estimateWaveMs() });
               updateStatus.mutate("paused");
               toast("Pausing scraper — current batch will finish within ~45s");
             }}><Pause className="h-4 w-4" /> Pause</Button>
             <Button variant="outline" size="sm" disabled={j.status === "stopped" || !!pendingAction} onClick={() => {
-              setPendingAction({ kind: "stopping", startedAt: Date.now() });
+              setPendingAction({ kind: "stopping", startedAt: Date.now(), estimatedWaveMs: estimateWaveMs() });
               updateStatus.mutate("stopped");
               toast("Stopping scraper");
             }}><Square className="h-4 w-4" /> Stop</Button>
