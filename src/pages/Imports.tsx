@@ -31,7 +31,7 @@ export default function Imports() {
   const [parsed, setParsed] = useState<ParsedFile | null>(null);
   const [mapping, setMapping] = useState<Mapping>({});
   const [opts, setOpts] = useState({ ignoreDuplicates: true, overwriteEmpty: false, autoStart: false, attachJob: "none" });
-  const [progress, setProgress] = useState<{ p: number; t: number } | null>(null);
+  const [progress, setProgress] = useState<{ p: number; t: number; phase?: string; startedAt?: number } | null>(null);
 
   const handleFile = async (f: File) => {
     if (!/\.(csv|xls|xlsx)$/i.test(f.name)) {
@@ -63,13 +63,18 @@ export default function Imports() {
         overwriteEmpty: opts.overwriteEmpty,
         autoStart: opts.autoStart,
       },
-      onProgress: (p, t) => setProgress({ p, t }),
+      onProgress: (p, t, phase) => setProgress((prev) => ({
+        p, t,
+        phase: phase ?? prev?.phase ?? "saving",
+        startedAt: prev?.startedAt ?? Date.now(),
+      })),
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["imports"] });
       qc.invalidateQueries({ queryKey: ["companies"] });
       qc.invalidateQueries({ queryKey: ["kpis"] });
-      toast.success(`Imported ${file?.name}`);
+      const elapsed = progress?.startedAt ? ((Date.now() - progress.startedAt) / 1000).toFixed(1) : null;
+      toast.success(`Imported ${file?.name}${elapsed ? ` in ${elapsed}s` : ""}`);
       setFile(null); setParsed(null); setMapping({}); setProgress(null);
     },
     onError: (e: any) => { toast.error(e.message ?? "Import failed"); setProgress(null); },
@@ -118,9 +123,19 @@ export default function Imports() {
 
           {progress && (
             <div className="mt-4">
-              <p className="text-xs text-muted-foreground mb-1">Processing {progress.p} / {progress.t}</p>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-medium capitalize text-foreground">{progress.phase ?? "saving"}</span>
+                  {progress.t > 0 && <> — {progress.p} / {progress.t}</>}
+                </p>
+                {progress.startedAt && progress.p > 0 && progress.t > progress.p && (
+                  <p className="text-xs text-muted-foreground tabular-nums">
+                    ~{Math.max(1, Math.round(((Date.now() - progress.startedAt) / progress.p) * (progress.t - progress.p) / 1000))}s left
+                  </p>
+                )}
+              </div>
               <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                <div className="h-full bg-primary transition-all" style={{ width: `${(progress.p / progress.t) * 100}%` }} />
+                <div className="h-full bg-primary transition-all" style={{ width: `${progress.t > 0 ? (progress.p / progress.t) * 100 : 0}%` }} />
               </div>
             </div>
           )}
