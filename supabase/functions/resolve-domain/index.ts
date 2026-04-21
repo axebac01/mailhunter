@@ -1,5 +1,6 @@
 // Resolve a company name (+ optional country) to a website domain via Firecrawl Search.
-// Improved: country-TLD bonus, homepage verification when scoring is borderline.
+// Uses cleaned query, ASCII-folded name variant, country/lang hints, fallback queries
+// and a looser homepage verifier.
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 
 const FIRECRAWL_V2 = "https://api.firecrawl.dev/v2";
@@ -28,10 +29,39 @@ const COUNTRY_TLDS: Record<string, string[]> = {
   italy: ["it"], italia: ["it"], it: ["it"],
 };
 
+const COUNTRY_HINTS: Record<string, { country: string; lang: string; contactWord: string; siteWord: string }> = {
+  sweden:  { country: "se", lang: "sv", contactWord: "kontakt", siteWord: "hemsida" },
+  sverige: { country: "se", lang: "sv", contactWord: "kontakt", siteWord: "hemsida" },
+  norway:  { country: "no", lang: "no", contactWord: "kontakt", siteWord: "nettside" },
+  norge:   { country: "no", lang: "no", contactWord: "kontakt", siteWord: "nettside" },
+  denmark: { country: "dk", lang: "da", contactWord: "kontakt", siteWord: "hjemmeside" },
+  danmark: { country: "dk", lang: "da", contactWord: "kontakt", siteWord: "hjemmeside" },
+  finland: { country: "fi", lang: "fi", contactWord: "yhteystiedot", siteWord: "kotisivu" },
+  suomi:   { country: "fi", lang: "fi", contactWord: "yhteystiedot", siteWord: "kotisivu" },
+  germany: { country: "de", lang: "de", contactWord: "kontakt", siteWord: "webseite" },
+  deutschland: { country: "de", lang: "de", contactWord: "kontakt", siteWord: "webseite" },
+  france:  { country: "fr", lang: "fr", contactWord: "contact", siteWord: "site" },
+  netherlands: { country: "nl", lang: "nl", contactWord: "contact", siteWord: "website" },
+  nederland: { country: "nl", lang: "nl", contactWord: "contact", siteWord: "website" },
+  uk: { country: "gb", lang: "en", contactWord: "contact", siteWord: "website" },
+  "united kingdom": { country: "gb", lang: "en", contactWord: "contact", siteWord: "website" },
+  ireland: { country: "ie", lang: "en", contactWord: "contact", siteWord: "website" },
+  spain:   { country: "es", lang: "es", contactWord: "contacto", siteWord: "sitio web" },
+  españa:  { country: "es", lang: "es", contactWord: "contacto", siteWord: "sitio web" },
+  italy:   { country: "it", lang: "it", contactWord: "contatti", siteWord: "sito web" },
+  italia:  { country: "it", lang: "it", contactWord: "contatti", siteWord: "sito web" },
+};
+
+const LEGAL_SUFFIXES_RE = /\b(ab|aktiebolag|oy|oyj|gmbh|mbh|ltd|limited|inc|incorporated|llc|l\.l\.c|sa|s\.a|spa|s\.p\.a|plc|bv|b\.v|as|a\/s|aps|a\.p\.s|sarl|s\.a\.r\.l|kg|ag|nv|n\.v|holding|holdings|group|the|co|corp|corporation|company)\b\.?/gi;
+
+function foldAscii(s: string): string { return s.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
+function cleanCompanyName(raw: string): string {
+  return raw.replace(/[,/&|]+/g, " ").replace(LEGAL_SUFFIXES_RE, " ").replace(/\s+/g, " ").trim();
+}
 function tokens(s: string): string[] {
-  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  return foldAscii(s.toLowerCase())
     .replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 3 &&
-      !["the","and","group","ltd","inc","llc","ab","oy","gmbh","sa","spa","plc","co","corp","company","holding","holdings"].includes(w));
+      !["the","and","group","ltd","inc","llc","oyj","gmbh","sarl","spa","plc","corp","company","holding","holdings"].includes(w));
 }
 function hostFromUrl(u: string): string | null {
   try { const url = new URL(u.startsWith("http") ? u : `https://${u}`); return url.hostname.replace(/^www\./, "").toLowerCase(); }
@@ -48,12 +78,17 @@ function tldOf(host: string): string {
   }
   return parts[parts.length - 1];
 }
+function hostStem(host: string): string {
+  const tld = tldOf(host);
+  return host.slice(0, host.length - tld.length - 1);
+}
 function scoreCandidate(host: string, nameTokens: string[], country?: string | null): number {
   if (isBlocked(host)) return -1;
-  const stripped = host.split(".").slice(0, -1).join(".");
+  const stripped = hostStem(host);
   let score = 0;
   for (const t of nameTokens) {
-    if (stripped.includes(t)) score += 2;
+    if (stripped === t) score += 4;
+    else if (stripped.includes(t)) score += 2;
     else if (host.includes(t)) score += 1;
   }
   if (host.split(".").length <= 2) score += 1;
@@ -62,6 +97,22 @@ function scoreCandidate(host: string, nameTokens: string[], country?: string | n
     if (expected && expected.includes(tldOf(host))) score += 2;
   }
   return score;
+}
+
+async function searchFirecrawl(query: string, apiKey: string, hints?: { country?: string; lang?: string }): Promise<any[]> {
+  const body: Record<string, unknown> = { query, limit: 10 };
+  if (hints?.country) body.country = hints.country;
+  if (hints?.lang) body.lang = hints.lang;
+  const res = await fetch(`${FIRECRAWL_V2}/search`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  if (!res.ok) {
+    return [];
+  }
+  return Array.isArray(json?.data) ? json.data : Array.isArray(json?.data?.web) ? json.data.web : [];
 }
 
 async function verifyHomepage(host: string, nameTokens: string[], apiKey: string): Promise<boolean> {
@@ -77,9 +128,27 @@ async function verifyHomepage(host: string, nameTokens: string[], apiKey: string
     if (!html) return false;
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/);
     const ogMatch = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)/);
-    const haystack = `${titleMatch?.[1] ?? ""} ${ogMatch?.[1] ?? ""}`.toLowerCase();
+    const descMatch = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)/);
+    const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/);
+    const haystack = foldAscii(`${titleMatch?.[1] ?? ""} ${ogMatch?.[1] ?? ""} ${descMatch?.[1] ?? ""} ${h1Match?.[1] ?? ""}`.toLowerCase());
     return nameTokens.some((t) => haystack.includes(t));
   } catch { return false; }
+}
+
+type Cand = { host: string; url: string; score: number; title?: string };
+
+function rankFromResults(results: any[], nameTokens: string[], country?: string | null): Cand[] {
+  const seen = new Map<string, Cand>();
+  for (const r of results) {
+    const url = r.url ?? r.link;
+    const host = url ? hostFromUrl(url) : null;
+    if (!host) continue;
+    const score = scoreCandidate(host, nameTokens, country);
+    if (score < 0) continue;
+    const prev = seen.get(host);
+    if (!prev || score > prev.score) seen.set(host, { host, url, score, title: r.title });
+  }
+  return Array.from(seen.values()).sort((a, b) => b.score - a.score);
 }
 
 Deno.serve(async (req) => {
@@ -96,45 +165,42 @@ Deno.serve(async (req) => {
       });
     }
 
-    const query = country ? `${companyName} ${country} official website` : `${companyName} official website`;
+    const cleanName = cleanCompanyName(companyName) || companyName;
+    const cleanAscii = foldAscii(cleanName);
+    const nameTokens = Array.from(new Set([...tokens(companyName), ...tokens(cleanName), ...tokens(cleanAscii)]));
+    const hints = country ? COUNTRY_HINTS[String(country).toLowerCase().trim()] : undefined;
+    const fcHints = hints ? { country: hints.country, lang: hints.lang } : undefined;
 
-    const res = await fetch(`${FIRECRAWL_V2}/search`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query, limit: 10 }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      return new Response(JSON.stringify({ error: json?.error ?? `Firecrawl ${res.status}`, raw: json }), {
-        status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    const queries: string[] = [];
+    if (country) {
+      queries.push(`"${cleanName}" ${country} ${hints?.contactWord ?? "contact"}`);
+      queries.push(`${cleanName} ${country}`);
+    } else {
+      queries.push(`"${cleanName}" official website`);
+    }
+    if (cleanAscii.toLowerCase() !== cleanName.toLowerCase()) {
+      queries.push(`"${cleanAscii}" ${country ?? ""}`.trim());
+    }
+    queries.push(`${cleanName} ${hints?.siteWord ?? "website"}`);
+
+    let bestOverall: Cand | undefined;
+    let lastRanked: Cand[] = [];
+    for (const q of queries) {
+      const results = await searchFirecrawl(q, apiKey, fcHints);
+      const ranked = rankFromResults(results, nameTokens, country);
+      if (ranked.length) lastRanked = ranked;
+      const top = ranked[0];
+      if (top && (!bestOverall || top.score > bestOverall.score)) bestOverall = top;
+      if (bestOverall && bestOverall.score >= 5) break;
     }
 
-    const results: any[] = Array.isArray(json?.data) ? json.data
-      : Array.isArray(json?.data?.web) ? json.data.web : [];
-
-    const nameTokens = tokens(companyName);
-    type Cand = { host: string; url: string; score: number; title?: string };
-    const seen = new Map<string, Cand>();
-    for (const r of results) {
-      const url = r.url ?? r.link;
-      const host = url ? hostFromUrl(url) : null;
-      if (!host) continue;
-      const score = scoreCandidate(host, nameTokens, country);
-      if (score < 0) continue;
-      const prev = seen.get(host);
-      if (!prev || score > prev.score) seen.set(host, { host, url, score, title: r.title });
-    }
-    const ranked = Array.from(seen.values()).sort((a, b) => b.score - a.score);
-    let best = ranked[0];
-
-    // Verify borderline candidates by fetching the homepage and checking name appears in title/og.
+    let best = bestOverall;
     if (best && best.score < 4) {
-      const ok = await verifyHomepage(best.host, nameTokens, apiKey);
-      if (!ok && ranked[1]) {
-        const ok2 = await verifyHomepage(ranked[1].host, nameTokens, apiKey);
-        if (ok2) best = ranked[1];
-        else if (best.score < 2) best = undefined as any;
+      const stem = hostStem(best.host);
+      const exactStem = nameTokens.some((t) => stem === t);
+      if (!exactStem) {
+        const ok = await verifyHomepage(best.host, nameTokens, apiKey);
+        if (!ok && best.score < 2) best = undefined;
       }
     }
 
@@ -149,7 +215,7 @@ Deno.serve(async (req) => {
       website: best ? `https://${best.host}` : null,
       confidence,
       evidenceUrl: best?.url ?? null,
-      candidates: ranked.slice(0, 5),
+      candidates: lastRanked.slice(0, 5),
     }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
