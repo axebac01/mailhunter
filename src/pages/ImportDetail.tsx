@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, FileText, Filter, Search, Briefcase, Plus, Loader2 } from "lucide-react";
+import { ArrowLeft, FileText, Filter, Search, Briefcase, Plus, Loader2, Square, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import { api, type ImportStatus } from "@/lib/api";
 import { exportImportResults } from "@/lib/exporters";
+import { cancelImport, restartImport } from "@/lib/importPipeline";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { EmptyState } from "@/components/app/EmptyState";
