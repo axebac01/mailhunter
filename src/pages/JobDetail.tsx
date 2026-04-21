@@ -30,6 +30,48 @@ export default function JobDetail() {
   const qc = useQueryClient();
 
   const job = useQuery({ queryKey: ["job", id], queryFn: () => api.getJob(id), refetchInterval: 2500 });
+
+  const [pendingAction, setPendingAction] = useState<{ kind: "pausing" | "stopping"; startedAt: number } | null>(null);
+
+  // Lightweight poll for the latest log row while a pause/stop is pending
+  const latestLog = useQuery({
+    queryKey: ["latestLog", id, pendingAction?.startedAt],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("crawl_logs")
+        .select("message, created_at")
+        .eq("crawl_job_id", id)
+        .order("created_at", { ascending: false })
+        .limit(5);
+      return data ?? [];
+    },
+    refetchInterval: pendingAction ? 3000 : false,
+    enabled: !!pendingAction,
+  });
+
+  // Detect worker exit: matching log line newer than click, or 60s safety timeout
+  useEffect(() => {
+    if (!pendingAction) return;
+    const needle = pendingAction.kind === "pausing" ? "paused by user" : "stopped by user";
+    const rows = latestLog.data ?? [];
+    const exited = rows.some((r: any) => {
+      const ts = new Date(r.created_at).getTime();
+      return ts >= pendingAction.startedAt - 1000 && typeof r.message === "string" && r.message.toLowerCase().includes(needle);
+    });
+    if (exited) {
+      setPendingAction(null);
+      return;
+    }
+    const elapsed = Date.now() - pendingAction.startedAt;
+    const remaining = 60000 - elapsed;
+    if (remaining <= 0) {
+      setPendingAction(null);
+      toast("Worker may still be finishing — refresh in a moment if needed.");
+      return;
+    }
+    const t = setTimeout(() => setPendingAction((p) => (p === pendingAction ? null : p)), remaining);
+    return () => clearTimeout(t);
+  }, [pendingAction, latestLog.data]);
   const allJobs = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
   const allContacts = useQuery({ queryKey: ["contacts"], queryFn: () => api.listContacts(), refetchInterval: 2500 });
   const allPeople = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople(), refetchInterval: 2500 });
