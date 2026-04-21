@@ -147,11 +147,31 @@ export default function JobDetail() {
     const elapsed = Date.now() - pendingAction.startedAt;
     const remaining = 60000 - elapsed;
     if (remaining <= 0) {
-      setPendingAction(null);
-      toast("Worker may still be finishing — refresh in a moment if needed.");
+      // Auto-refetch once before surrendering — worker may have exited just now.
+      (async () => {
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ["job", id] }),
+          qc.invalidateQueries({ queryKey: ["logs", id] }),
+          latestLog.refetch(),
+        ]);
+        const fresh = (latestLog.data ?? []) as any[];
+        const justExited = fresh.some((r: any) => {
+          const ts = new Date(r.created_at).getTime();
+          return ts >= pendingAction.startedAt - 1000 && typeof r.message === "string" && r.message.toLowerCase().includes(needle);
+        });
+        setPendingAction(null);
+        if (!justExited) {
+          toast("Worker is taking longer than expected. The status is correct — refresh logs to confirm.", {
+            action: {
+              label: "Refresh logs",
+              onClick: () => qc.invalidateQueries({ queryKey: ["logs", id] }),
+            },
+          });
+        }
+      })();
       return;
     }
-    const t = setTimeout(() => setPendingAction((p) => (p === pendingAction ? null : p)), remaining);
+    const t = setTimeout(() => setPendingAction(null), remaining);
     return () => clearTimeout(t);
   }, [pendingAction, latestLog.data]);
   const allJobs = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
