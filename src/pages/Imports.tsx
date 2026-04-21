@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Upload, FileText, X, CheckCircle2, ArrowRight } from "lucide-react";
+import { Upload, FileText, X, CheckCircle2, ArrowRight, Square, RotateCw, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { autoMap, parseFile, runImport, checkLargeXlsx, type Mapping, type ParseResult } from "@/lib/importPipeline";
+import { autoMap, parseFile, runImport, restartImport, cancelImport, checkLargeXlsx, type Mapping, type ParseResult } from "@/lib/importPipeline";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { EmptyState } from "@/components/app/EmptyState";
