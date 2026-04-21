@@ -212,6 +212,32 @@ export default function JobDetail() {
   }, [allContacts.data, contactsFilter]);
   const jobPeople = useMemo(() => (allPeople.data ?? []).filter((p) => p.jobId === id), [allPeople.data, id]);
 
+  type LogFilter = "all" | "done" | "errors" | "shutdown" | "resolver";
+  const [logFilter, setLogFilter] = useState<LogFilter>("all");
+  const matchLog = (l: any, f: LogFilter) => {
+    const ev = (l.metaJson ?? l.meta_json)?.event;
+    if (f === "done") return ev === "company_finished";
+    if (f === "errors") return l.level === "error" || l.level === "warn";
+    if (f === "shutdown") return /paused by user|stopped by user|resumed|shutdown|aborted/i.test(l.message ?? "");
+    if (f === "resolver") return ev === "resolve_started" || ev === "resolve_deferred" || ev === "resolve_completed";
+    return true;
+  };
+  const logCounts = useMemo(() => {
+    const list = (logs.data ?? []) as any[];
+    const c = { all: list.length, done: 0, errors: 0, shutdown: 0, resolver: 0 };
+    for (const l of list) {
+      if (matchLog(l, "done")) c.done++;
+      if (matchLog(l, "errors")) c.errors++;
+      if (matchLog(l, "shutdown")) c.shutdown++;
+      if (matchLog(l, "resolver")) c.resolver++;
+    }
+    return c;
+  }, [logs.data]);
+  const filteredLogs = useMemo(
+    () => ((logs.data ?? []) as any[]).filter((l) => matchLog(l, logFilter)),
+    [logs.data, logFilter],
+  );
+
   const updateStatus = useMutation({
     mutationFn: (s: JobStatus) => api.updateJobStatus(id, s),
     onSuccess: (_d, s) => {
@@ -594,9 +620,37 @@ export default function JobDetail() {
 
         <TabsContent value="logs">
           <SectionCard title="Activity log" noPadding>
+            <div className="flex items-center gap-2 flex-wrap px-5 py-3 border-b border-border">
+              {([
+                { key: "all", label: "All", n: logCounts.all },
+                { key: "done", label: "Companies done", n: logCounts.done },
+                { key: "errors", label: "Errors", n: logCounts.errors },
+                { key: "shutdown", label: "Shutdown", n: logCounts.shutdown },
+                { key: "resolver", label: "Resolver", n: logCounts.resolver },
+              ] as { key: LogFilter; label: string; n: number }[]).map((c) => (
+                <button
+                  key={c.key}
+                  onClick={() => setLogFilter(c.key)}
+                  className={cn(
+                    "text-xs px-2.5 py-1 rounded-full border transition-colors",
+                    logFilter === c.key
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-background text-muted-foreground border-border hover:bg-muted",
+                  )}
+                >
+                  {c.label} · {c.n}
+                </button>
+              ))}
+              <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+                {filteredLogs.length} of {logCounts.all}
+              </span>
+            </div>
             <div className="divide-y divide-border max-h-[500px] overflow-auto scrollbar-thin font-mono text-xs">
-              {(logs.data ?? []).length === 0 && <EmptyState description="No log entries yet." />}
-              {(logs.data ?? []).map((l) => (
+              {logCounts.all === 0 && <EmptyState description="No log entries yet." />}
+              {logCounts.all > 0 && filteredLogs.length === 0 && (
+                <EmptyState description="No log entries match this filter." />
+              )}
+              {filteredLogs.map((l) => (
                 <div key={l.id} className="px-5 py-2 flex items-start gap-3">
                   <span className={
                     l.level === "error" ? "text-destructive" :
