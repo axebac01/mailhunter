@@ -116,6 +116,29 @@ export default function Imports() {
     mutationFn: (id: string) => api.deleteImport(id),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["imports"] }); qc.invalidateQueries({ queryKey: ["kpis"] }); toast.success("Import deleted"); },
   });
+
+  const restartMut = useMutation({
+    mutationFn: (id: string) => restartImport(id, (p, t, phase) => {
+      activeImports.set(id, { phase: phase ?? "saving", p, t, startedAt: Date.now() });
+    }),
+    onSuccess: (id) => {
+      activeImports.delete(id);
+      qc.invalidateQueries({ queryKey: ["imports"] });
+      qc.invalidateQueries({ queryKey: ["companies"] });
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+      toast.success("Import restarted");
+    },
+    onError: (e: any, id) => {
+      activeImports.delete(id);
+      toast.error(e?.message ?? "Restart failed");
+    },
+  });
+
+  const stopImport = (id: string) => {
+    cancelImport(id);
+    toast.message("Stopping import…");
+    qc.invalidateQueries({ queryKey: ["imports"] });
+  };
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
