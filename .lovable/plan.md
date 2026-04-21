@@ -2,52 +2,52 @@
 
 ## Goal
 
-Give users immediate visual feedback when they click **Pause** or **Stop** on a running scrape job, instead of just waiting for the status badge to flip. Show a transient "Pausing…" / "Stopping…" intermediate state until the worker actually halts (status reaches `paused` / `stopped` AND the in-flight wave has finished).
+While the JobDetail page is in the transient **Pausing…** / **Stopping…** state, show an estimated remaining time (e.g. *"~32s left"*) so users know roughly how long until the in-flight wave finishes and the worker actually exits.
 
 ## Approach
 
-All changes are local to `src/pages/JobDetail.tsx` — no edge function or DB changes.
+All changes local to `src/pages/JobDetail.tsx`. No backend changes — we derive the estimate from existing `crawl_logs` already polled.
 
-### 1. Track local "intent" state
+### 1. Estimate "typical wave duration" from recent logs
 
-Add `const [pendingAction, setPendingAction] = useState<"pausing" | "stopping" | null>(null);`
+The worker logs `"Finished <Company> in Ns"` after each company (visible in the network dump, e.g. *"Finished StenStures Måleri AB in 43s"*, *"Finished N Fredrikssons Fönsterrenovering AB in 22s"*). The `meta_json.duration_ms` field on those entries is the authoritative per-company time.
 
-- When user clicks **Pause** → `setPendingAction("pausing")`, then call `api.updateJobStatus(id, "paused")`.
-- When user clicks **Stop** → `setPendingAction("stopping")`, then call `api.updateJobStatus(id, "stopped")`.
-- Clear `pendingAction` when:
-  - The polled job status reaches the requested terminal state (`paused` / `stopped`) **AND** the most recent `crawl_logs` entry for the job confirms the wave exited (look for the `"Scraping paused/stopped by user after wave"` log line the worker already writes), OR
-  - A safety timeout of 60 s elapses (so the UI never sticks).
+When `pendingAction` becomes set:
+- From the already-fetched `crawl_logs` list, pick the **last 5–10 entries** whose `meta_json.event === "company_finished"` and read `meta_json.duration_ms`.
+- Take the **max** of those (worst-case in-flight company), capped at 60s, floored at 5s. Default to 45s if no samples exist.
+- Store this as `estimatedWaveMs` alongside `pendingAction.startedAt`.
 
-### 2. Reflect intent in the UI
+### 2. Countdown badge
 
-While `pendingAction` is set:
+Add a small badge next to the existing "Pausing…" / "Stopping…" pill:
+- Computed as `Math.max(0, estimatedWaveMs - (now - startedAt))`, rounded to seconds.
+- Updated via a `setInterval(1000)` that's only active while `pendingAction !== null`.
+- Display formats:
+  - `> 0s` → *"~Ns left"* (muted text, monospace numerals)
+  - `0s` reached but worker hasn't exited yet → *"finishing up…"* (no number, avoids "−5s left")
 
-- **Status badge area**: render an inline pill next to the existing badge — amber spinner + "Pausing…" or neutral spinner + "Stopping…".
-- **Banner above progress bar**: replace the existing paused/stopped banner with an "in-flight" variant:
-  - Pausing: *"Pausing scraper — waiting for the current batch to finish (up to ~45 s)…"* with a small spinner.
-  - Stopping: *"Stopping scraper — waiting for the current batch to finish (up to ~45 s)…"*
-- **Buttons**: disable **Start / Pause / Stop** entirely while `pendingAction !== null` so the user can't issue conflicting commands mid-transition.
-- Toasts already exist from the previous change; keep them as the immediate "click acknowledged" cue.
+### 3. Update the transition banner copy
 
-### 3. Detect worker exit cleanly
+Replace the static *"up to ~45 s"* phrasing in the banner with the dynamic estimate:
+- Pausing: *"Pausing scraper — current batch finishing (~Ns left)…"*
+- Stopping: *"Stopping scraper — current batch finishing (~Ns left)…"*
 
-Use the existing `crawl_logs` query (already polling) — find the latest log entry for this job; if its `message` contains `"paused by user"` or `"stopped by user"` and its `created_at` is after the click timestamp stored alongside `pendingAction`, treat the worker as exited and clear the pending state.
+When the countdown reaches 0, fall back to *"current batch finishing up…"*.
 
-If `crawl_logs` isn't already queried on this page, add a lightweight 3 s poll for just the latest log row (`limit 1, order by created_at desc`) gated on `pendingAction !== null`, so it only runs during the transition.
+### 4. Cleanup
 
-### 4. Edge cases
-
-- If the user hits **Start** quickly after pausing/stopping (once buttons re-enable on terminal state), the existing resume flow runs unchanged.
-- If polling times out (60 s) without seeing the exit log, clear `pendingAction`, switch to the regular paused/stopped banner, and toast *"Worker may still be finishing — refresh in a moment if needed."*
+- Clear the interval when `pendingAction` clears (worker exit detected) or on unmount.
+- No new queries, no new state besides `estimatedWaveMs` and a `tick` counter for re-render.
 
 ## Files to change
 
-- `src/pages/JobDetail.tsx` — add `pendingAction` state, transition banner + pill, button disabling, latest-log poll for exit detection, 60 s safety timeout.
+- `src/pages/JobDetail.tsx` — compute `estimatedWaveMs` on Pause/Stop click, add countdown via `setInterval`, render badge + update banner copy.
 
 ## Success criteria
 
-- Clicking **Pause** instantly shows a "Pausing…" pill + banner with spinner; it persists until the worker logs its exit (typically a few seconds, up to ~45 s), then flips to the regular "Scraper paused" banner.
+- Clicking **Pause** shows *"Pausing… ~32s left"* (or similar) immediately, with the number ticking down each second.
+- The estimate reflects recent real wave durations (from `meta_json.duration_ms` on `company_finished` logs), not a hard-coded 45s.
+- When the countdown hits 0 but the worker hasn't exited yet, the badge switches to *"finishing up…"* instead of going negative.
 - Same behavior for **Stop**.
-- Start / Pause / Stop buttons are disabled during the transition so the user can't double-click.
-- No backend changes; relies on existing worker exit log lines.
+- No backend or DB changes.
 
