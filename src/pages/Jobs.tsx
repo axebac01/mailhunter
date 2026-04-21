@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
+import { ProgressBar } from "@/components/app/ProgressBar";
 import { Plus, Search, Play, Pause, Square, Copy, Trash2, Eye, MoreHorizontal, Briefcase } from "lucide-react";
 import { toast } from "sonner";
 import { api, type JobStatus } from "@/lib/api";
@@ -31,6 +33,17 @@ export default function Jobs() {
   const [createdFrom, setCreatedFrom] = useState("");
   const [lastRunFrom, setLastRunFrom] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel("crawl_jobs_progress")
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "crawl_jobs" }, () => {
+        qc.invalidateQueries({ queryKey: ["jobs"] });
+        qc.invalidateQueries({ queryKey: ["kpis"] });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc]);
 
   const countries = useMemo(() => Array.from(new Set(jobs.map((j) => j.country).filter(Boolean) as string[])).sort(), [jobs]);
   const industries = useMemo(() => Array.from(new Set(jobs.map((j) => j.industry).filter(Boolean) as string[])).sort(), [jobs]);
@@ -131,13 +144,14 @@ export default function Jobs() {
                   <TableHead>Job name</TableHead><TableHead>Industry</TableHead><TableHead>Country</TableHead>
                   <TableHead>Status</TableHead><TableHead>Created</TableHead><TableHead>Last run</TableHead>
                   <TableHead>Schedule</TableHead>
-                  <TableHead className="text-right">Companies</TableHead>
-                  <TableHead className="text-right">Contacts</TableHead>
+                  <TableHead className="min-w-[240px]">Progress</TableHead>
                   <TableHead className="w-12" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((j) => (
+                {filtered.map((j) => {
+                  const isActive = j.status === "running" || j.status === "scheduled" || j.status === "paused";
+                  return (
                   <TableRow key={j.id} className="cursor-pointer" onClick={() => navigate(`/jobs/${j.id}`)}>
                     <TableCell className="font-medium">{j.name}</TableCell>
                     <TableCell className="text-muted-foreground">{j.industry ?? "—"}</TableCell>
@@ -146,8 +160,23 @@ export default function Jobs() {
                     <TableCell className="text-muted-foreground text-sm">{fmtDate(j.createdAt)}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{fmtRelative(j.lastRunAt)}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{j.startTime}–{j.endTime}</TableCell>
-                    <TableCell className="text-right tabular-nums">{fmtNum(j.companiesFound)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{fmtNum(j.contactsFound)}</TableCell>
+                    <TableCell className="min-w-[240px]">
+                      {isActive ? (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-2">
+                            <ProgressBar value={j.progress} className="flex-1" />
+                            <span className="text-xs tabular-nums text-muted-foreground w-9 text-right">{Math.round(j.progress)}%</span>
+                          </div>
+                          <div className="text-xs text-muted-foreground tabular-nums">
+                            {fmtNum(j.companiesFound)}/{fmtNum(j.maxCompanies)} companies · {fmtNum(j.contactsFound)} contacts · {fmtNum(j.pagesCrawled)} pages
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted-foreground tabular-nums">
+                          {fmtNum(j.companiesFound)} companies · {fmtNum(j.contactsFound)} contacts · {fmtNum(j.pagesCrawled)} pages
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
@@ -163,7 +192,7 @@ export default function Jobs() {
                       </DropdownMenu>
                     </TableCell>
                   </TableRow>
-                ))}
+                );})}
               </TableBody>
             </Table>
           </div>
