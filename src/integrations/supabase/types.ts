@@ -222,6 +222,7 @@ export type Database = {
           industry: string | null
           last_run_at: string | null
           max_companies: number
+          meta_json: Json | null
           name: string
           notes: string | null
           pages_crawled: number
@@ -251,6 +252,7 @@ export type Database = {
           industry?: string | null
           last_run_at?: string | null
           max_companies?: number
+          meta_json?: Json | null
           name: string
           notes?: string | null
           pages_crawled?: number
@@ -280,6 +282,7 @@ export type Database = {
           industry?: string | null
           last_run_at?: string | null
           max_companies?: number
+          meta_json?: Json | null
           name?: string
           notes?: string | null
           pages_crawled?: number

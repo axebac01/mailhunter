@@ -1,0 +1,1 @@
+ALTER TABLE public.crawl_jobs ADD COLUMN IF NOT EXISTS meta_json jsonb;
