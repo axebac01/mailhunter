@@ -27,10 +27,12 @@ import { JobLogsPanel } from "@/components/jobDetail/JobLogsPanel";
 import { JobContactsTab } from "@/components/jobDetail/JobContactsTab";
 import { JobPeopleTab } from "@/components/jobDetail/JobPeopleTab";
 import { JobSourcePagesTab } from "@/components/jobDetail/JobSourcePagesTab";
+import { DomainStatsError } from "@/components/jobDetail/DomainStatsError";
 import { useRef } from "react";
 import { cn } from "@/lib/utils";
 
 interface DomainStats { total: number; resolved: number; unresolved: number; failed: number }
+interface DomainStatsResult { stats: DomainStats | null; companyIdCount: number }
 
 export default function JobDetail() {
   const { id = "" } = useParams<{ id: string }>();
@@ -62,27 +64,49 @@ export default function JobDetail() {
   const jobContacts = jobContactsQuery.data ?? [];
   const jobPeople = jobPeopleQuery.data ?? [];
 
-  const domainStats = useQuery<DomainStats | null>({
+  const domainStats = useQuery<DomainStatsResult>({
     queryKey: ["domainStats", id],
     queryFn: async () => {
-      const { data: imports } = await supabase.from("imports").select("id").eq("crawl_job_id", id);
+      const { data: imports, error: impErr } = await supabase.from("imports").select("id").eq("crawl_job_id", id);
+      if (impErr) {
+        console.error("[domainStats] imports lookup failed", { jobId: id, error: impErr });
+        throw impErr;
+      }
       const importIds = (imports ?? []).map((i) => i.id);
-      if (importIds.length === 0) return null;
-      const { data: rows } = await supabase.from("import_rows").select("matched_company_id").in("import_id", importIds).not("matched_company_id", "is", null);
+      if (importIds.length === 0) return { stats: null, companyIdCount: 0 };
+      const { data: rows, error: rowsErr } = await supabase.from("import_rows").select("matched_company_id").in("import_id", importIds).not("matched_company_id", "is", null);
+      if (rowsErr) {
+        console.error("[domainStats] import_rows lookup failed", { jobId: id, error: rowsErr });
+        throw rowsErr;
+      }
       const companyIds = Array.from(new Set((rows ?? []).map((r) => r.matched_company_id).filter(Boolean) as string[]));
-      if (companyIds.length === 0) return { total: 0, resolved: 0, unresolved: 0, failed: 0 };
-      const { data: companies } = await supabase.from("companies").select("id, domain, domain_status").in("id", companyIds);
+      const companyIdCount = companyIds.length;
+      if (companyIdCount === 0) return { stats: { total: 0, resolved: 0, unresolved: 0, failed: 0 }, companyIdCount: 0 };
+      const { data: companies, error: compErr } = await supabase.from("companies").select("id, domain, domain_status").in("id", companyIds);
+      if (compErr) {
+        console.error("[domainStats] query failed", { jobId: id, companyIdCount, error: compErr });
+        throw compErr;
+      }
       const list = companies ?? [];
+      if (list.length < companyIdCount) {
+        console.warn("[domainStats] partial response", { jobId: id, requested: companyIdCount, received: list.length });
+      }
       return {
-        total: list.length,
-        resolved: list.filter((c) => c.domain).length,
-        unresolved: list.filter((c) => !c.domain && (c.domain_status === "unresolved" || !c.domain_status)).length,
-        failed: list.filter((c) => !c.domain && c.domain_status === "failed").length,
+        stats: {
+          total: list.length,
+          resolved: list.filter((c) => c.domain).length,
+          unresolved: list.filter((c) => !c.domain && (c.domain_status === "unresolved" || !c.domain_status)).length,
+          failed: list.filter((c) => !c.domain && c.domain_status === "failed").length,
+        },
+        companyIdCount,
       };
     },
     refetchInterval: 5000,
     enabled: !!id,
+    retry: false,
   });
+  const domainStatsData = domainStats.data?.stats ?? null;
+  const domainStatsCompanyIdCount = domainStats.data?.companyIdCount ?? 0;
 
   const updateStatus = useMutation({
     mutationFn: (s: JobStatus) => api.updateJobStatus(id, s),
@@ -195,12 +219,12 @@ export default function JobDetail() {
                 <Search className="h-4 w-4" /> {resolveDomains.isPending ? "Resolving…" : "Resolve domains"}
               </Button>
             )}
-            {j.sourceType === "uploaded" && (domainStats.data?.failed ?? 0) > 0 && (
+            {j.sourceType === "uploaded" && (domainStatsData?.failed ?? 0) > 0 && (
               <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate({ retryFailed: true })} disabled={resolveDomains.isPending}>
-                <Search className="h-4 w-4" /> Retry failed ({domainStats.data?.failed})
+                <Search className="h-4 w-4" /> Retry failed ({domainStatsData?.failed})
               </Button>
             )}
-            {j.sourceType === "uploaded" && (domainStats.data?.total ?? 0) > 0 && (
+            {j.sourceType === "uploaded" && (domainStatsData?.total ?? 0) > 0 && (
               <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate({ reresolveAll: true })} disabled={resolveDomains.isPending}>
                 <Search className="h-4 w-4" /> Re-resolve all
               </Button>
@@ -269,22 +293,30 @@ export default function JobDetail() {
         <KpiCard label="Pages crawled" value={fmtNum(j.pagesCrawled)} icon={<Globe className="h-4 w-4" />} />
       </div>
 
-      {j.sourceType === "uploaded" && domainStats.data && (
+      {j.sourceType === "uploaded" && domainStatsData && (
         <div className="mb-3 rounded-md border border-border bg-card px-4 py-3 text-sm flex flex-wrap items-center gap-x-6 gap-y-1">
           <span className="font-medium">Domain resolution</span>
-          <span className="text-muted-foreground">{domainStats.data.total} companies</span>
-          <span className="text-success">✓ {domainStats.data.resolved} resolved</span>
-          <span className="text-warning">… {domainStats.data.unresolved} pending</span>
-          <span className="text-destructive">✗ {domainStats.data.failed} no domain found</span>
-          {domainStats.data.failed > 0 && (
+          <span className="text-muted-foreground">{domainStatsData.total} companies</span>
+          <span className="text-success">✓ {domainStatsData.resolved} resolved</span>
+          <span className="text-warning">… {domainStatsData.unresolved} pending</span>
+          <span className="text-destructive">✗ {domainStatsData.failed} no domain found</span>
+          {domainStatsData.failed > 0 && (
             <span className="text-xs text-muted-foreground ml-auto">Companies without a real domain are skipped — no fake emails are generated.</span>
           )}
         </div>
       )}
 
+      {j.sourceType === "uploaded" && domainStats.isError && domainStatsCompanyIdCount > 0 && (
+        <DomainStatsError
+          companyIdCount={domainStatsCompanyIdCount}
+          isFetching={domainStats.isFetching}
+          onRetry={() => domainStats.refetch()}
+        />
+      )}
+
       {pendingAction
         ? <PendingActionBanner pendingAction={pendingAction} />
-        : <JobStatusBanners job={j} domainStats={domainStats.data} resumePending={resumeScraping.isPending} onResume={() => resumeScraping.mutate()} />}
+        : <JobStatusBanners job={j} domainStats={domainStatsData} resumePending={resumeScraping.isPending} onResume={() => resumeScraping.mutate()} />}
 
       <Tabs defaultValue="timeline">
         <TabsList>
