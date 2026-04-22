@@ -1,23 +1,23 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, Mail } from "lucide-react";
+import { Mail } from "lucide-react";
 import { toast } from "sonner";
-import { api, type ContactType } from "@/lib/api";
+import { api, type ContactRow, type ContactType } from "@/lib/api";
 import { exportContacts } from "@/lib/exporters";
 import { PageHeader } from "@/components/app/PageHeader";
 import { ContactTypeBadge } from "@/components/app/StatusBadge";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ExportButton } from "@/components/app/ExportButton";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtRelative } from "@/lib/format";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useTableFilters } from "@/hooks/useTableFilters";
+import { FilterBar, type FilterChip } from "@/components/app/FilterBar";
+import { PaginationFooter } from "@/components/app/PaginationFooter";
 
-const PAGE_SIZE = 25;
+const CONTACT_TYPES: ContactType[] = ["generic_email", "person_email", "phone", "contact_form"];
 
 export default function Contacts() {
   const qc = useQueryClient();
@@ -25,100 +25,70 @@ export default function Contacts() {
   const { data: jobs = [] } = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
   const { data: imports = [] } = useQuery({ queryKey: ["imports"], queryFn: () => api.listImports() });
 
-  const [search, setSearch] = useState("");
-  const [type, setType] = useState<string>("all");
-  const [country, setCountry] = useState<string>("all");
-  const [industry, setIndustry] = useState<string>("all");
-  const [jobId, setJobId] = useState<string>("all");
-  const [importId, setImportId] = useState<string>("all");
-  const [from, setFrom] = useState("");
-  const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-
   const countries = useMemo(() => Array.from(new Set(contacts.map((c) => c.country).filter(Boolean) as string[])).sort(), [contacts]);
   const industries = useMemo(() => Array.from(new Set(contacts.map((c) => c.industry).filter(Boolean) as string[])).sort(), [contacts]);
 
-  const filtered = useMemo(() => contacts.filter((c) =>
-    (type === "all" || c.contactType === type) &&
-    (country === "all" || c.country === country) &&
-    (industry === "all" || c.industry === industry) &&
-    (jobId === "all" || c.jobId === jobId) &&
-    (importId === "all" || c.importId === importId) &&
-    (!from || c.foundAt >= from) &&
-    (search === "" || c.companyName.toLowerCase().includes(search.toLowerCase()) || c.contactValue.toLowerCase().includes(search.toLowerCase()))
-  ), [contacts, type, country, industry, jobId, importId, from, search]);
+  const filterDefs = useMemo(() => ({
+    type: (c: ContactRow, v: string) => c.contactType === v,
+    country: (c: ContactRow, v: string) => c.country === v,
+    industry: (c: ContactRow, v: string) => c.industry === v,
+    jobId: (c: ContactRow, v: string) => c.jobId === v,
+    importId: (c: ContactRow, v: string) => c.importId === v,
+  }), []);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const visible = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const t = useTableFilters({
+    rows: contacts,
+    rowId: (c) => c.id,
+    filterDefs,
+    fromFn: (c, from) => c.foundAt >= from,
+    searchFn: (c, q) => c.companyName.toLowerCase().includes(q) || c.contactValue.toLowerCase().includes(q),
+  });
+
+  const chips: FilterChip[] = [
+    { key: "type", placeholder: "Type", width: "w-[150px]", allLabel: "All types", options: CONTACT_TYPES.map((x) => ({ value: x, label: x })) },
+    { key: "country", placeholder: "Country", options: countries.map((x) => ({ value: x, label: x })) },
+    { key: "industry", placeholder: "Industry", options: industries.map((x) => ({ value: x, label: x })) },
+    { key: "jobId", placeholder: "Job", width: "w-[170px]", allLabel: "All jobs", options: jobs.map((j) => ({ value: j.id, label: j.name })) },
+    { key: "importId", placeholder: "Import", width: "w-[170px]", allLabel: "All imports", options: imports.map((i) => ({ value: i.id, label: i.fileName })) },
+  ];
 
   const handleExport = async (scope: "all"|"filtered"|"selected", format: "csv"|"xlsx") => {
     let rows = contacts;
-    if (scope === "filtered") rows = filtered;
-    else if (scope === "selected") rows = filtered.filter((r) => selected.has(r.id));
+    if (scope === "filtered") rows = t.filtered;
+    else if (scope === "selected") rows = t.filtered.filter((r) => t.selected.has(r.id));
     if (rows.length === 0) return toast.error("Nothing to export");
     const name = await exportContacts(rows, format);
     qc.invalidateQueries({ queryKey: ["kpis"] });
     toast.success(`Exported ${rows.length} rows → ${name}`);
   };
 
-  const allSelected = visible.length > 0 && visible.every((r) => selected.has(r.id));
-  const toggleAll = () => {
-    const next = new Set(selected);
-    if (allSelected) visible.forEach((r) => next.delete(r.id));
-    else visible.forEach((r) => next.add(r.id));
-    setSelected(next);
-  };
-
-  const clearFilters = () => { setType("all"); setCountry("all"); setIndustry("all"); setJobId("all"); setImportId("all"); setFrom(""); setSearch(""); setPage(1); };
-
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
         title="Contacts"
         description="Public contact records only — generic emails, personal emails, phone numbers, and contact form URLs."
-        actions={<ExportButton selectedCount={selected.size} onExport={handleExport} />}
+        actions={<ExportButton selectedCount={t.selected.size} onExport={handleExport} />}
       />
 
       <Card className="mb-4 p-3">
-        <div className="flex flex-wrap gap-3 items-center">
-          <div className="relative flex-1 min-w-[220px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input className="pl-9" placeholder="Search company or value..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
-          </div>
-          <Select value={type} onValueChange={(v) => { setType(v); setPage(1); }}>
-            <SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All types</SelectItem>
-              {(["generic_email","person_email","phone","contact_form"] as ContactType[]).map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Select value={country} onValueChange={(v) => { setCountry(v); setPage(1); }}>
-            <SelectTrigger className="w-[160px]"><SelectValue placeholder="Country" /></SelectTrigger>
-            <SelectContent><SelectItem value="all">All countries</SelectItem>{countries.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-          </Select>
-          <Select value={industry} onValueChange={(v) => { setIndustry(v); setPage(1); }}>
-            <SelectTrigger className="w-[160px]"><SelectValue placeholder="Industry" /></SelectTrigger>
-            <SelectContent><SelectItem value="all">All industries</SelectItem>{industries.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-          </Select>
-          <Select value={jobId} onValueChange={(v) => { setJobId(v); setPage(1); }}>
-            <SelectTrigger className="w-[170px]"><SelectValue placeholder="Job" /></SelectTrigger>
-            <SelectContent><SelectItem value="all">All jobs</SelectItem>{jobs.map((j) => <SelectItem key={j.id} value={j.id}>{j.name}</SelectItem>)}</SelectContent>
-          </Select>
-          <Select value={importId} onValueChange={(v) => { setImportId(v); setPage(1); }}>
-            <SelectTrigger className="w-[170px]"><SelectValue placeholder="Import" /></SelectTrigger>
-            <SelectContent><SelectItem value="all">All imports</SelectItem>{imports.map((i) => <SelectItem key={i.id} value={i.id}>{i.fileName}</SelectItem>)}</SelectContent>
-          </Select>
-          <Input type="date" className="w-[150px]" value={from.slice(0,10)} onChange={(e) => { setFrom(e.target.value ? e.target.value + "T00:00:00.000Z" : ""); setPage(1); }} />
-          {(type !== "all" || country !== "all" || industry !== "all" || jobId !== "all" || importId !== "all" || search || from) && (
-            <Button variant="ghost" size="sm" onClick={clearFilters}>Clear filters</Button>
-          )}
-        </div>
+        <FilterBar
+          search={t.search}
+          searchPlaceholder="Search company or value..."
+          onSearchChange={t.setSearch}
+          chips={chips}
+          values={t.filters}
+          onChipChange={t.setFilter}
+          from={t.from}
+          onFromChange={t.setFrom}
+          hasActive={t.hasActiveFilters}
+          onClear={t.clear}
+        />
       </Card>
 
       <Card className="overflow-hidden">
         {isLoading ? (
           <div className="p-4 space-y-2">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-9" />)}</div>
-        ) : filtered.length === 0 ? (
+        ) : t.filtered.length === 0 ? (
           <EmptyState icon={<Mail className="h-5 w-5" />} description="No contacts found yet. Run a job or import companies to populate results." />
         ) : (
           <>
@@ -126,7 +96,7 @@ export default function Contacts() {
               <Table>
                 <TableHeader className="sticky top-0 bg-card z-10">
                   <TableRow>
-                    <TableHead className="w-10"><Checkbox checked={allSelected} onCheckedChange={toggleAll} /></TableHead>
+                    <TableHead className="w-10"><Checkbox checked={t.allVisibleSelected} onCheckedChange={t.toggleAllVisible} /></TableHead>
                     <TableHead>Company</TableHead><TableHead>Domain</TableHead>
                     <TableHead>Country</TableHead><TableHead>Industry</TableHead>
                     <TableHead>Type</TableHead><TableHead>Value</TableHead>
@@ -135,9 +105,9 @@ export default function Contacts() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {visible.map((c) => (
-                    <TableRow key={c.id} data-state={selected.has(c.id) ? "selected" : undefined}>
-                      <TableCell><Checkbox checked={selected.has(c.id)} onCheckedChange={(v) => { const n = new Set(selected); if (v) n.add(c.id); else n.delete(c.id); setSelected(n); }} /></TableCell>
+                  {t.visible.map((c) => (
+                    <TableRow key={c.id} data-state={t.selected.has(c.id) ? "selected" : undefined}>
+                      <TableCell><Checkbox checked={t.selected.has(c.id)} onCheckedChange={() => t.toggleRow(c.id)} /></TableCell>
                       <TableCell className="font-medium">{c.companyName}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{c.domain ?? "—"}</TableCell>
                       <TableCell className="text-sm">{c.country ?? "—"}</TableCell>
@@ -152,14 +122,15 @@ export default function Contacts() {
                 </TableBody>
               </Table>
             </div>
-            <div className="flex items-center justify-between p-3 border-t border-border text-sm">
-              <span className="text-muted-foreground">Showing {visible.length} of {filtered.length} ({selected.size} selected)</span>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</Button>
-                <span className="text-muted-foreground">Page {page} of {totalPages}</span>
-                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</Button>
-              </div>
-            </div>
+            <PaginationFooter
+              visibleCount={t.visible.length}
+              totalCount={t.filtered.length}
+              selectedCount={t.selected.size}
+              page={t.page}
+              totalPages={t.totalPages}
+              onPrev={() => t.setPage((p) => p - 1)}
+              onNext={() => t.setPage((p) => p + 1)}
+            />
           </>
         )}
       </Card>
