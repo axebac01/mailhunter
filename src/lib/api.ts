@@ -45,6 +45,7 @@ export interface JobRow {
   updatedAt: string;
   lastRunAt: string | null;
   sourceType: Database["public"]["Enums"]["source_type"];
+  metaJson: Record<string, unknown> | null;
 }
 
 export interface CompanyRow {
@@ -179,6 +180,7 @@ const mapJob = (r: DB["crawl_jobs"]["Row"]): JobRow => ({
   updatedAt: r.updated_at,
   lastRunAt: r.last_run_at,
   sourceType: r.source_type,
+  metaJson: ((r as any).meta_json ?? null) as Record<string, unknown> | null,
 });
 
 const mapCompany = (r: DB["companies"]["Row"]): CompanyRow => ({
