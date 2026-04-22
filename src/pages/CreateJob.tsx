@@ -219,6 +219,16 @@ export default function CreateJob() {
       />
 
       <div className="space-y-6">
+        <SectionCard title="Job name" description="Give this job a recognizable name">
+          <Label htmlFor="name" className="sr-only">Job name</Label>
+          <Input
+            id="name"
+            placeholder="e.g. SaaS outreach — Germany Q2"
+            value={form.name}
+            onChange={(e) => update("name", e.target.value)}
+          />
+        </SectionCard>
+
         <SectionCard title="Source" description="Choose where the list of companies comes from">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <button
