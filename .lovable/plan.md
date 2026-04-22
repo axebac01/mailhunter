@@ -2,43 +2,65 @@
 
 ## Goal
 
-Two small UX improvements on the **Create job** page (`src/pages/CreateJob.tsx`):
+Stop the infinite "Waiting on domain resolution…" loop when Firecrawl returns **HTTP 402 / payment_required**. Auto-pause the job, surface a clear actionable error state, and prevent the worker from re-invoking until credits are restored.
 
-1. Move the **Job name** field out of the "Basics" section and place it directly under the "Create job" page header.
-2. Redesign the **Allowed weekdays** picker so selected days are clearly distinguishable.
+## Problem (current behavior)
 
-## Changes
+When `resolve-domains-batch` hits 402:
+1. It logs *"Firecrawl returned 402 — top up to continue"* and returns.
+2. Affected companies stay in `domain_status: pending` (not `failed`).
+3. `scrape-emails-batch` sees `pendingResolution.length > 0` and re-invokes itself every 15s **forever**, spamming logs.
+4. Job stays `running` with no clear failure signal.
 
-### 1. Job name — surface at the top
+## Fix — three coordinated changes
 
-- Remove the `Job name` input from the "Basics" `SectionCard` (lines 292–295).
-- Add a new dedicated `SectionCard` titled **"Job name"** (description: *"Give this job a recognizable name"*) placed **above** the "Source" section, right under the `PageHeader`.
-- Keep the same `Input`, validation hookup, and asterisk indicator.
-- "Basics" then contains only Industry / Country / Max companies in a 3-column grid (or 2-col on smaller screens) — drop the `md:col-span-2` wrapper.
+### 1. Resolver: mark unresolved companies as `failed` on 402
 
-### 2. Weekday picker redesign
+In `supabase/functions/resolve-domains-batch/index.ts`, in the `paymentErr` branch (around line 552 and final summary block ~585):
 
-Replace the small uppercase `ToggleGroupItem` row with a more visually obvious selector:
+- After detecting `paymentErr`, **bulk-update all unprocessed companies** in this run (`todo` items not yet resolved + the `remaining` deferred ids) to `domain_status = 'failed'`. This prevents the scraper from waiting on them.
+- Keep `payment_required: true` flag on the `resolve_completed` log (already present).
 
-- 7 evenly spaced **circular day pills** (~44×44 px) showing 3-letter day labels (Mon, Tue, …).
-- **Selected**: filled `bg-primary` background, `text-primary-foreground`, subtle ring/shadow, slight scale.
-- **Unselected**: `bg-muted`, muted foreground text, hover lightens.
-- Weekend days (Sat / Sun) get a subtle accent in the unselected state (lighter muted tone) to distinguish them from weekdays at a glance.
-- Below the row: small helper text showing the current selection summary, e.g. *"Mon–Fri selected (5 days)"* or *"No days selected"* in destructive color when empty.
-- Add two quick-action text buttons next to the label: **Weekdays** (Mon–Fri) and **Every day** for fast presets.
-- Keep the underlying state shape (`form.weekdays: Weekday[]`) and `update("weekdays", …)` unchanged — implement as plain buttons toggling array membership instead of `ToggleGroup`, for full styling control.
+### 2. Resolver: pause the job on 402
 
-Keep all logic, validation, and submission identical. No backend or schema changes.
+In the same final block, when `paymentErr && jobId`:
+
+- Update `crawl_jobs` → `status: 'paused'` and stamp `meta_json.paused_reason = 'firecrawl_payment_required'` (merge into existing `meta_json` if present).
+- Log a distinct shutdown event so the existing `JobTimeline` / Logs filter ("Shutdown") surfaces it: 
+  ```
+  level: "error",
+  message: "Job auto-paused — Firecrawl returned 402 (insufficient credits). Top up and resume.",
+  meta_json: { event: "auto_paused", reason: "firecrawl_payment_required" }
+  ```
+- Skip scheduling any continuation re-invoke (already handled — `remaining` self-call is gated by `!paymentErr`, good).
+
+### 3. Scraper: respect the auto-pause and stop polling
+
+In `supabase/functions/scrape-emails-batch/index.ts`:
+
+- The existing `job.status !== "running"` check at line 66 already exits cleanly once the resolver paused the job. **No code change needed there** — it works as soon as #2 lands.
+- Add a defensive secondary guard: before scheduling re-invoke at line 179, re-fetch `crawl_jobs.meta_json` and if `paused_reason === 'firecrawl_payment_required'`, log and exit instead of re-invoking. (Belt-and-suspenders against race where status update lags.)
+
+### 4. Frontend: explain the auto-pause in the banner
+
+In `src/pages/JobDetail.tsx`, the existing paused banner currently shows generic copy. Extend it:
+
+- When `job.status === 'paused'` AND `job.meta_json?.paused_reason === 'firecrawl_payment_required'`, render a destructive-tinted alert above the standard Resume controls:
+  > **Auto-paused — Firecrawl ran out of credits.** Top up your Firecrawl account, then click Resume to continue domain resolution.
+- Add a small "Open Firecrawl" link button (`https://www.firecrawl.dev/app/billing`).
+- On Resume: clear `meta_json.paused_reason` so the banner doesn't re-appear after a successful resume.
 
 ## Files to change
 
-- `src/pages/CreateJob.tsx` — restructure sections (new top "Job name" card, slimmer "Basics"), and rewrite the weekday picker block in the Schedule section.
+- `supabase/functions/resolve-domains-batch/index.ts` — bulk-fail unresolved companies, set `paused` status + `paused_reason`, add `auto_paused` log event.
+- `supabase/functions/scrape-emails-batch/index.ts` — defensive `paused_reason` re-check before re-invoke.
+- `src/pages/JobDetail.tsx` — dedicated auto-pause banner variant + clear `paused_reason` on resume.
 
 ## Success criteria
 
-- "Job name" input appears in its own card directly under the page title, before "Source".
-- "Basics" no longer contains the name field.
-- Selected weekdays are immediately, unmistakably visible (filled colored pills vs muted ones).
-- Quick presets (**Weekdays**, **Every day**) work and update the selection.
-- Selection summary text reflects the current state.
+- Triggering 402 (any wave) results in: job flips to `paused` within seconds, all pending companies become `failed`, scraper stops re-invoking.
+- Logs show a single clear `auto_paused` entry instead of an endless "Waiting on domain resolution…" stream.
+- JobDetail banner explains the cause and provides a path forward (top up + Resume).
+- After topping up and clicking Resume, the job continues normally and the special banner disappears.
+- No backend schema changes (uses existing `crawl_jobs.meta_json` jsonb column).
 
