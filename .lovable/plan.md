@@ -2,44 +2,51 @@
 
 ## Goal
 
-Run a focused UI smoke test across **Dashboard** and **JobDetail** to confirm the recent refactor (component extraction, server-side pagination, shared table hooks) introduced no visible regressions.
+Make the `domainStats` query failure visible instead of silent. Today the query in `JobDetail.tsx` fails with HTTP 400 (URL too long, ~2,863 UUIDs in `id=in.(...)`) and the UI just shows nothing — banners that depend on `domainStats` never render and there is no clue why.
 
-## Test plan
+## Changes
 
-I'll drive the live preview with the browser tool, capturing screenshots at each checkpoint and comparing against the expected behavior from the code.
+### 1. `src/pages/JobDetail.tsx` — instrument the `domainStats` query
 
-### Dashboard (`/`)
-1. Navigate to `/`, screenshot full page.
-2. Verify KPI cards render with numbers (not skeletons stuck loading).
-3. Verify "Latest contacts" / "Latest people" sections show ≤5 rows each (server-side limit confirmation).
-4. Confirm sidebar nav is intact and active state highlights "Dashboard".
-5. Check console for errors / failed network requests.
+- Capture the company-id count in a local before the `companies` lookup.
+- On query error: `console.error("[domainStats] query failed", { jobId, companyIdCount, error })`.
+- On success when `companyIdCount > 0` but `data` is missing/short: `console.warn("[domainStats] partial response", { requested, received })`.
+- Return a richer object: `{ stats, error, companyIdCount }` instead of just stats — keep `stats` shape backward-compatible with `JobStatusBanners`.
 
-### JobDetail (`/jobs/:id`) — current job `a6c3e7f7…`
-1. Screenshot the page as loaded.
-2. Verify header, status badge, KPI strip, and any active status banner (paused/firecrawl-402/etc.) render correctly via `JobStatusBanners`.
-3. **Tabs** — click through each and screenshot:
-   - **Timeline** — events render.
-   - **Logs** (`JobLogsPanel`) — filter chips show counts; click "Errors" and "Shutdown", confirm row list updates and counts match.
-   - **Contacts** (`JobContactsTab`) — table renders, the job-scope `Select` works, switch to "All jobs" and back.
-   - **People** (`JobPeopleTab`) — table renders.
-   - **Source pages** (`JobSourcePagesTab`) — table renders.
-4. If a `PendingActionBanner` is present, confirm countdown ring animates.
-5. Check console + network tab for 4xx/5xx, especially on `contacts`/`people` queries (server-side `.range()` + filters).
+### 2. New component `src/components/jobDetail/DomainStatsError.tsx`
 
-### Pass criteria
-- No console errors beyond known warnings.
-- All tabs mount without blank panels.
-- Tables show data or proper empty states (not crash boundaries).
-- Filter chips on Logs tab visibly filter rows.
-- Layouts at 1336×895 match pre-refactor structure (sidebar + main, no overflow).
+Small inline alert (uses existing `Alert` / `AlertDescription` from shadcn) shown only when:
+- `job.sourceType === "uploaded"` AND
+- `domainStatsQuery.error` is set OR (`companyIdCount > 0` AND `stats === null`)
 
-### Deliverable
-A concise report with:
-- Pass/fail per checkpoint
-- Screenshots of Dashboard and each JobDetail tab
-- Any console errors or layout issues found
-- If issues found: I'll stop and report before fixing
+Content:
+- Title: "Couldn't load domain resolution stats"
+- One-line body: `"Tried to fetch status for {companyIdCount} companies but the request failed. Banners about resolution progress are hidden until this loads."`
+- A small "Retry" button calling `domainStatsQuery.refetch()`.
+- Tone: `variant="warning"` (muted yellow), not destructive — the rest of the page still works.
 
-No code changes in this task unless a regression is discovered.
+### 3. Wire it into `JobDetail.tsx`
+
+- Render `<DomainStatsError />` directly above `<JobStatusBanners />`.
+- Pass `domainStats` (the `stats` field) to `JobStatusBanners` as before — no change to that component.
+
+### 4. Empty-state nuance
+
+When `companyIdCount === 0` (no companies imported yet for an uploaded job), do NOT show an error — that's a normal empty state, not a failure. Only the genuine HTTP error or "we asked for N but got nothing back" case triggers the alert.
+
+## Files to change
+
+- `src/pages/JobDetail.tsx` — extend `domainStats` query, add console logging, render the new component.
+- `src/components/jobDetail/DomainStatsError.tsx` — new file.
+
+## Out of scope (deliberate)
+
+The underlying URL-length bug (chunking the `id IN (...)` filter or switching to a join via `import_id`) is **not** fixed here. This task only adds visibility. A follow-up task can address the root cause.
+
+## Success criteria
+
+- When `domainStats` returns 400, the JobDetail page shows a clear inline warning with the requested count and a Retry button.
+- Console contains a single structured `[domainStats] query failed` entry with `jobId`, `companyIdCount`, and the error.
+- When `companyIdCount === 0`, no alert appears (clean empty state).
+- All existing banners (paused, firecrawl-402, completed-early) still render unchanged when `domainStats` succeeds.
 
