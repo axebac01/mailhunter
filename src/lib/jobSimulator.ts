@@ -49,8 +49,16 @@ const INDUSTRY_WORDS: Record<string, string[]> = {
 const SUFFIXES = ["AB", "Group", "Co", "Partners", "Holding", "Studio"];
 
 const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(Math.random() * arr.length)];
+const pickWithProbability = (probability: number) => Math.random() < probability;
 const tickers = new Map<string, number>();
 const batchInvoked = new Set<string>();
+
+const isDev = (() => {
+  try { return import.meta.env?.DEV === true; } catch { return false; }
+})();
+const logSimError = (label: string, err: unknown) => {
+  if (isDev) console.warn(`[jobSimulator] ${label}`, err);
+};
 
 function slugPart(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");

@@ -1,28 +1,36 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Play, Pause, Square, Copy, Building2, Mail, Users, Globe, Trash2, Search, Activity, Loader2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
-import { api, type JobStatus } from "@/lib/api";
+import { api, type JobStatus, type JobMetaJson } from "@/lib/api";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
 import { exportJobResults } from "@/lib/exporters";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
-import { JobStatusBadge, ContactTypeBadge } from "@/components/app/StatusBadge";
+import { JobStatusBadge } from "@/components/app/StatusBadge";
 import { ProgressBar } from "@/components/app/ProgressBar";
 import { KpiCard } from "@/components/app/KpiCard";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ExportButton } from "@/components/app/ExportButton";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { fmtDateTime, fmtRelative, fmtNum } from "@/lib/format";
 import { TimelineEvent, type TimelineEventType } from "@/components/app/TimelineEvent";
 import { supabase } from "@/integrations/supabase/client";
+import { usePendingAction, estimateWaveMsFromLogs } from "@/hooks/usePendingAction";
+import { PendingActionPill, PendingActionBanner } from "@/components/jobDetail/PendingActionBanner";
+import { JobStatusBanners } from "@/components/jobDetail/JobStatusBanners";
+import { JobLogsPanel } from "@/components/jobDetail/JobLogsPanel";
+import { JobContactsTab } from "@/components/jobDetail/JobContactsTab";
+import { JobPeopleTab } from "@/components/jobDetail/JobPeopleTab";
+import { JobSourcePagesTab } from "@/components/jobDetail/JobSourcePagesTab";
+import { useRef } from "react";
 import { cn } from "@/lib/utils";
+
+interface DomainStats { total: number; resolved: number; unresolved: number; failed: number }
 
 export default function JobDetail() {
   const { id = "" } = useParams<{ id: string }>();
@@ -30,167 +38,41 @@ export default function JobDetail() {
   const qc = useQueryClient();
 
   const job = useQuery({ queryKey: ["job", id], queryFn: () => api.getJob(id), refetchInterval: 2500 });
-
-  type PendingAction = { kind: "pausing" | "stopping"; startedAt: number; estimatedWaveMs: number };
-  const PENDING_KEY = (jobId: string) => `jobDetail:pendingAction:${jobId}`;
-
-  const [pendingAction, setPendingActionState] = useState<PendingAction | null>(() => {
-    if (typeof window === "undefined" || !id) return null;
-    try {
-      const raw = sessionStorage.getItem(PENDING_KEY(id));
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as PendingAction;
-      // Only rehydrate if startedAt is recent (< 90s old)
-      if (Date.now() - parsed.startedAt > 90_000) {
-        sessionStorage.removeItem(PENDING_KEY(id));
-        return null;
-      }
-      return parsed;
-    } catch {
-      return null;
-    }
-  });
-
-  const setPendingAction = (next: PendingAction | null) => {
-    setPendingActionState(next);
-    if (typeof window === "undefined" || !id) return;
-    try {
-      if (next) sessionStorage.setItem(PENDING_KEY(id), JSON.stringify(next));
-      else sessionStorage.removeItem(PENDING_KEY(id));
-    } catch {
-      /* ignore quota / privacy errors */
-    }
-  };
-
-  const [, setTick] = useState(0);
-
-  // Smooth countdown via rAF, throttled to ~250ms updates. Avoids interval drift / focus jitter.
-  useEffect(() => {
-    if (!pendingAction) return;
-    let rafId = 0;
-    let last = 0;
-    const loop = (now: number) => {
-      if (now - last >= 250) {
-        last = now;
-        setTick((t) => (t + 1) % 1_000_000);
-      }
-      rafId = requestAnimationFrame(loop);
-    };
-    rafId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(rafId);
-  }, [pendingAction]);
-
-  // Estimate wave duration: p90 of last 20 "company_finished" durations + 3s buffer.
-  function estimateWaveMs(): number {
-    const rows = (logs.data ?? []) as any[];
-    const samples: number[] = [];
-    for (const r of rows) {
-      const meta = r?.meta ?? r?.meta_json;
-      if (meta?.event === "company_finished" && typeof meta.duration_ms === "number") {
-        samples.push(meta.duration_ms);
-        if (samples.length >= 20) break;
-      }
-    }
-    if (samples.length === 0) return 45000;
-    const sorted = [...samples].sort((a, b) => a - b);
-    const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9));
-    const p90 = sorted[idx];
-    return Math.min(60000, Math.max(5000, p90 + 3000));
-  }
-
-  // Inline circular progress ring used in the Pausing…/Stopping… pill.
-  function CountdownRing({ progress, className }: { progress: number; className?: string }) {
-    const r = 5;
-    const c = 2 * Math.PI * r;
-    const clamped = Math.max(0, Math.min(1, progress));
-    return (
-      <svg width="14" height="14" viewBox="0 0 14 14" className={className} aria-hidden="true">
-        <circle cx="7" cy="7" r={r} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="1.5" />
-        <circle
-          cx="7" cy="7" r={r} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
-          strokeDasharray={c} strokeDashoffset={c * (1 - clamped)}
-          transform="rotate(-90 7 7)" style={{ transition: "stroke-dashoffset 250ms linear" }}
-        />
-      </svg>
-    );
-  }
-
-  // Lightweight poll for the latest log row while a pause/stop is pending
-  const latestLog = useQuery({
-    queryKey: ["latestLog", id, pendingAction?.startedAt],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("crawl_logs")
-        .select("message, created_at")
-        .eq("crawl_job_id", id)
-        .order("created_at", { ascending: false })
-        .limit(5);
-      return data ?? [];
-    },
-    refetchInterval: pendingAction ? 3000 : false,
-    enabled: !!pendingAction,
-  });
-
-  // Detect worker exit: matching log line newer than click, or 60s safety timeout
-  useEffect(() => {
-    if (!pendingAction) return;
-    const needle = pendingAction.kind === "pausing" ? "paused by user" : "stopped by user";
-    const rows = latestLog.data ?? [];
-    const exited = rows.some((r: any) => {
-      const ts = new Date(r.created_at).getTime();
-      return ts >= pendingAction.startedAt - 1000 && typeof r.message === "string" && r.message.toLowerCase().includes(needle);
-    });
-    if (exited) {
-      setPendingAction(null);
-      return;
-    }
-    const elapsed = Date.now() - pendingAction.startedAt;
-    const remaining = 60000 - elapsed;
-    if (remaining <= 0) {
-      // Auto-refetch once before surrendering — worker may have exited just now.
-      (async () => {
-        await Promise.all([
-          qc.invalidateQueries({ queryKey: ["job", id] }),
-          qc.invalidateQueries({ queryKey: ["logs", id] }),
-          latestLog.refetch(),
-        ]);
-        const fresh = (latestLog.data ?? []) as any[];
-        const justExited = fresh.some((r: any) => {
-          const ts = new Date(r.created_at).getTime();
-          return ts >= pendingAction.startedAt - 1000 && typeof r.message === "string" && r.message.toLowerCase().includes(needle);
-        });
-        setPendingAction(null);
-        if (!justExited) {
-          toast("Worker is taking longer than expected. The status is correct — refresh logs to confirm.", {
-            action: {
-              label: "Refresh logs",
-              onClick: () => qc.invalidateQueries({ queryKey: ["logs", id] }),
-            },
-          });
-        }
-      })();
-      return;
-    }
-    const t = setTimeout(() => setPendingAction(null), remaining);
-    return () => clearTimeout(t);
-  }, [pendingAction, latestLog.data]);
   const allJobs = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
-  const allContacts = useQuery({ queryKey: ["contacts"], queryFn: () => api.listContacts(), refetchInterval: 2500 });
-  const allPeople = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople(), refetchInterval: 2500 });
   const logs = useQuery({ queryKey: ["logs", id], queryFn: () => api.listLogs(id), refetchInterval: 2500 });
   const sourcePages = useQuery({ queryKey: ["sourcePages", id], queryFn: () => api.listSourcePages({ jobId: id }), refetchInterval: 5000 });
-  const domainStats = useQuery({
+
+  const { pendingAction, setPendingAction } = usePendingAction(id);
+
+  const [contactsFilter, setContactsFilter] = useState<string>(id);
+  useEffect(() => { setContactsFilter(id); }, [id]);
+
+  // Server-side scoped queries
+  const jobContactsQuery = useQuery({
+    queryKey: ["contacts", { jobId: contactsFilter === "all" ? null : contactsFilter }],
+    queryFn: () => api.listContacts(contactsFilter === "all" ? {} : { jobId: contactsFilter }),
+    refetchInterval: 2500,
+  });
+  const jobPeopleQuery = useQuery({
+    queryKey: ["people", { jobId: id }],
+    queryFn: () => api.listPeople({ jobId: id }),
+    refetchInterval: 2500,
+  });
+
+  const jobContacts = jobContactsQuery.data ?? [];
+  const jobPeople = jobPeopleQuery.data ?? [];
+
+  const domainStats = useQuery<DomainStats | null>({
     queryKey: ["domainStats", id],
     queryFn: async () => {
-      const { supabase } = await import("@/integrations/supabase/client");
       const { data: imports } = await supabase.from("imports").select("id").eq("crawl_job_id", id);
-      const importIds = (imports ?? []).map((i: any) => i.id);
+      const importIds = (imports ?? []).map((i) => i.id);
       if (importIds.length === 0) return null;
       const { data: rows } = await supabase.from("import_rows").select("matched_company_id").in("import_id", importIds).not("matched_company_id", "is", null);
-      const companyIds = Array.from(new Set((rows ?? []).map((r: any) => r.matched_company_id).filter(Boolean)));
+      const companyIds = Array.from(new Set((rows ?? []).map((r) => r.matched_company_id).filter(Boolean) as string[]));
       if (companyIds.length === 0) return { total: 0, resolved: 0, unresolved: 0, failed: 0 };
       const { data: companies } = await supabase.from("companies").select("id, domain, domain_status").in("id", companyIds);
-      const list = (companies ?? []) as any[];
+      const list = companies ?? [];
       return {
         total: list.length,
         resolved: list.filter((c) => c.domain).length,
@@ -201,42 +83,6 @@ export default function JobDetail() {
     refetchInterval: 5000,
     enabled: !!id,
   });
-
-  const [contactsFilter, setContactsFilter] = useState<string>(id);
-  useEffect(() => { setContactsFilter(id); }, [id]);
-
-  const jobContacts = useMemo(() => {
-    const list = allContacts.data ?? [];
-    if (contactsFilter === "all") return list;
-    return list.filter((c) => c.jobId === contactsFilter);
-  }, [allContacts.data, contactsFilter]);
-  const jobPeople = useMemo(() => (allPeople.data ?? []).filter((p) => p.jobId === id), [allPeople.data, id]);
-
-  type LogFilter = "all" | "done" | "errors" | "shutdown" | "resolver";
-  const [logFilter, setLogFilter] = useState<LogFilter>("all");
-  const matchLog = (l: any, f: LogFilter) => {
-    const ev = (l.metaJson ?? l.meta_json)?.event;
-    if (f === "done") return ev === "company_finished";
-    if (f === "errors") return l.level === "error" || l.level === "warn";
-    if (f === "shutdown") return /paused by user|stopped by user|resumed|shutdown|aborted/i.test(l.message ?? "");
-    if (f === "resolver") return ev === "resolve_started" || ev === "resolve_deferred" || ev === "resolve_completed";
-    return true;
-  };
-  const logCounts = useMemo(() => {
-    const list = (logs.data ?? []) as any[];
-    const c = { all: list.length, done: 0, errors: 0, shutdown: 0, resolver: 0 };
-    for (const l of list) {
-      if (matchLog(l, "done")) c.done++;
-      if (matchLog(l, "errors")) c.errors++;
-      if (matchLog(l, "shutdown")) c.shutdown++;
-      if (matchLog(l, "resolver")) c.resolver++;
-    }
-    return c;
-  }, [logs.data]);
-  const filteredLogs = useMemo(
-    () => ((logs.data ?? []) as any[]).filter((l) => matchLog(l, logFilter)),
-    [logs.data, logFilter],
-  );
 
   const updateStatus = useMutation({
     mutationFn: (s: JobStatus) => api.updateJobStatus(id, s),
@@ -263,17 +109,17 @@ export default function JobDetail() {
       qc.invalidateQueries({ queryKey: ["jobs"] });
       qc.invalidateQueries({ queryKey: ["kpis"] });
     },
-    onError: (e: any) => toast.error(e?.message ?? "Failed to clear"),
+    onError: (e: Error) => toast.error(e?.message ?? "Failed to clear"),
   });
 
+  interface ResolveResult { resolved: number; failed: number; total: number; paymentRequired?: boolean }
   const resolveDomains = useMutation({
     mutationFn: async (vars?: { retryFailed?: boolean; reresolveAll?: boolean }) => {
-      const { supabase } = await import("@/integrations/supabase/client");
       const { data, error } = await supabase.functions.invoke("resolve-domains-batch", {
         body: { jobId: id, retryFailed: vars?.retryFailed ?? false, reresolveAll: vars?.reresolveAll ?? false },
       });
       if (error) throw error;
-      return data as { resolved: number; failed: number; total: number; paymentRequired?: boolean };
+      return data as ResolveResult;
     },
     onSuccess: (r) => {
       if (r?.paymentRequired) {
@@ -284,15 +130,14 @@ export default function JobDetail() {
       qc.invalidateQueries({ queryKey: ["domainStats", id] });
       qc.invalidateQueries({ queryKey: ["companies"] });
     },
-    onError: (e: any) => toast.error(e?.message ?? "Resolve domains failed"),
+    onError: (e: Error) => toast.error(e?.message ?? "Resolve domains failed"),
   });
 
   const resumeScraping = useMutation({
     mutationFn: async () => {
-      // Clear any auto-pause reason flag so the dedicated banner disappears.
-      const currentMeta = (job.data?.metaJson ?? {}) as Record<string, unknown>;
+      const currentMeta = (job.data?.metaJson ?? {}) as JobMetaJson;
       const { paused_reason: _r, paused_at: _a, ...rest } = currentMeta;
-      await api.patchJob(id, { status: "running", meta_json: rest as any });
+      await api.patchJob(id, { status: "running", meta_json: rest as never });
       const { data, error } = await supabase.functions.invoke("scrape-emails-batch", { body: { jobId: id } });
       if (error) throw error;
       return data;
@@ -302,10 +147,8 @@ export default function JobDetail() {
       qc.invalidateQueries({ queryKey: ["job", id] });
       qc.invalidateQueries({ queryKey: ["logs", id] });
     },
-    onError: (e: any) => toast.error(e?.message ?? "Resume failed"),
+    onError: (e: Error) => toast.error(e?.message ?? "Resume failed"),
   });
-
-  useEffect(() => () => {/* keep simulator running across navigations */}, []);
 
   if (job.isLoading) return <div className="p-6">Loading…</div>;
   const j = job.data;
@@ -322,6 +165,8 @@ export default function JobDetail() {
     toast.success(`Exported ${name}`);
   };
 
+  const personEmailCount = jobContacts.filter((c) => c.contactType === "person_email").length;
+
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
       <Button variant="ghost" size="sm" className="mb-3" onClick={() => navigate("/jobs")}><ArrowLeft className="h-4 w-4" /> All jobs</Button>
@@ -331,19 +176,16 @@ export default function JobDetail() {
         actions={
           <>
             <Button variant="outline" size="sm" disabled={j.status === "running" || resumeScraping.isPending || !!pendingAction} onClick={() => {
-              if (j.status === "paused" || j.status === "stopped") {
-                resumeScraping.mutate();
-              } else {
-                updateStatus.mutate("running");
-              }
+              if (j.status === "paused" || j.status === "stopped") resumeScraping.mutate();
+              else updateStatus.mutate("running");
             }}><Play className="h-4 w-4" /> Start</Button>
             <Button variant="outline" size="sm" disabled={j.status !== "running" || !!pendingAction} onClick={() => {
-              setPendingAction({ kind: "pausing", startedAt: Date.now(), estimatedWaveMs: estimateWaveMs() });
+              setPendingAction({ kind: "pausing", startedAt: Date.now(), estimatedWaveMs: estimateWaveMsFromLogs(logs.data) });
               updateStatus.mutate("paused");
               toast("Pausing scraper — current batch will finish within ~45s");
             }}><Pause className="h-4 w-4" /> Pause</Button>
             <Button variant="outline" size="sm" disabled={j.status === "stopped" || !!pendingAction} onClick={() => {
-              setPendingAction({ kind: "stopping", startedAt: Date.now(), estimatedWaveMs: estimateWaveMs() });
+              setPendingAction({ kind: "stopping", startedAt: Date.now(), estimatedWaveMs: estimateWaveMsFromLogs(logs.data) });
               updateStatus.mutate("stopped");
               toast("Stopping scraper");
             }}><Square className="h-4 w-4" /> Stop</Button>
@@ -378,9 +220,7 @@ export default function JobDetail() {
                 </AlertDialogHeader>
                 <AlertDialogFooter>
                   <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction onClick={() => clearContacts.mutate()} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-                    Delete
-                  </AlertDialogAction>
+                  <AlertDialogAction onClick={() => clearContacts.mutate()} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
@@ -394,33 +234,7 @@ export default function JobDetail() {
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <JobStatusBadge status={j.status} />
-              {pendingAction && (() => {
-                const elapsed = Date.now() - pendingAction.startedAt;
-                const remainingMs = Math.max(0, pendingAction.estimatedWaveMs - elapsed);
-                const secs = Math.max(1, Math.ceil(remainingMs / 1000));
-                const progress = pendingAction.estimatedWaveMs > 0
-                  ? Math.min(1, elapsed / pendingAction.estimatedWaveMs)
-                  : 1;
-                const label = pendingAction.kind === "pausing" ? "Pausing" : "Stopping";
-                const tail = remainingMs > 0 ? `~${secs}s left` : "finishing up…";
-                return (
-                  <span
-                    role="status"
-                    aria-live="polite"
-                    aria-label={`${label}, ${remainingMs > 0 ? `about ${secs} seconds left` : "finishing up"}`}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium min-w-[160px]",
-                      pendingAction.kind === "pausing" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground"
-                    )}
-                  >
-                    {remainingMs > 0
-                      ? <CountdownRing progress={progress} />
-                      : <Loader2 className="h-3 w-3 animate-spin" />}
-                    <span aria-hidden="true">{label}…</span>
-                    <span className="ml-auto tabular-nums opacity-80" aria-hidden="true">{tail}</span>
-                  </span>
-                );
-              })()}
+              {pendingAction && <PendingActionPill pendingAction={pendingAction} />}
             </div>
             <span className="text-sm text-muted-foreground">{j.progress}% complete</span>
           </div>
@@ -450,11 +264,7 @@ export default function JobDetail() {
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         <KpiCard label="Companies" value={fmtNum(j.companiesFound)} icon={<Building2 className="h-4 w-4" />} />
         <KpiCard label="Contacts" value={fmtNum(j.contactsFound)} icon={<Mail className="h-4 w-4" />} />
-        <KpiCard
-          label="Person emails"
-          value={fmtNum((jobContacts ?? []).filter((c: any) => c.contactType === "person_email").length)}
-          icon={<Mail className="h-4 w-4" />}
-        />
+        <KpiCard label="Person emails" value={fmtNum(personEmailCount)} icon={<Mail className="h-4 w-4" />} />
         <KpiCard label="People" value={fmtNum(j.peopleFound)} icon={<Users className="h-4 w-4" />} />
         <KpiCard label="Pages crawled" value={fmtNum(j.pagesCrawled)} icon={<Globe className="h-4 w-4" />} />
       </div>
@@ -472,81 +282,9 @@ export default function JobDetail() {
         </div>
       )}
 
-      {pendingAction ? (
-        <div
-          role="status"
-          aria-live="polite"
-          className={cn(
-            "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
-            pendingAction.kind === "pausing" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
-          )}
-        >
-          {(() => {
-            const elapsed = Date.now() - pendingAction.startedAt;
-            const remainingMs = Math.max(0, pendingAction.estimatedWaveMs - elapsed);
-            const secs = Math.max(1, Math.ceil(remainingMs / 1000));
-            const progress = pendingAction.estimatedWaveMs > 0
-              ? Math.min(1, elapsed / pendingAction.estimatedWaveMs)
-              : 1;
-            const tail = remainingMs > 0 ? `current batch finishing (~${secs}s left)…` : "current batch finishing up…";
-            const lead = pendingAction.kind === "pausing" ? "Pausing scraper" : "Stopping scraper";
-            const tone = pendingAction.kind === "pausing" ? "text-warning" : "text-muted-foreground";
-            return (
-              <>
-                {remainingMs > 0
-                  ? <CountdownRing progress={progress} className={tone} />
-                  : <Loader2 className={cn("h-4 w-4 animate-spin", tone)} />}
-                <span className="tabular-nums">{`${lead} — ${tail}`}</span>
-              </>
-            );
-          })()}
-        </div>
-      ) : (j.status === "paused" || j.status === "stopped") && (
-        <>
-          {j.status === "paused" && (j.metaJson as any)?.paused_reason === "firecrawl_payment_required" && (
-            <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm flex items-start justify-between gap-3">
-              <div className="flex-1">
-                <div className="font-medium text-destructive">Auto-paused — Firecrawl ran out of credits.</div>
-                <div className="text-muted-foreground mt-0.5">
-                  Top up your Firecrawl account, then click <strong>Start</strong> to continue domain resolution. Unresolved companies were marked as failed and can be retried after resuming.
-                </div>
-              </div>
-              <Button asChild size="sm" variant="outline">
-                <a href="https://www.firecrawl.dev/app/billing" target="_blank" rel="noreferrer">Open Firecrawl</a>
-              </Button>
-            </div>
-          )}
-          <div className={cn(
-            "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
-            j.status === "paused" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
-          )}>
-            {j.status === "paused"
-              ? <span>Scraper paused. Click <strong>Start</strong> to resume from where it left off.</span>
-              : <span>Scraper stopped. Click <strong>Start</strong> to resume.</span>}
-          </div>
-        </>
-      )}
-
-      {j.sourceType === "uploaded" && j.status === "running" && domainStats.data && domainStats.data.unresolved > 0 && (
-        <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm flex items-center gap-2">
-          <Loader2 className="h-4 w-4 animate-spin text-warning" />
-          <span>Resolving domains: {domainStats.data.resolved} of {domainStats.data.total} done — scraping continues automatically as domains resolve.</span>
-        </div>
-      )}
-
-      {j.sourceType === "uploaded" && j.status === "completed" && domainStats.data &&
-       (j.companiesFound < domainStats.data.resolved || domainStats.data.unresolved > 0) && (
-        <div className="mb-6 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm flex items-center justify-between gap-2">
-          <span>
-            This job finished early: {j.companiesFound} scraped but {domainStats.data.resolved} have resolved domains
-            {domainStats.data.unresolved > 0 ? ` (${domainStats.data.unresolved} still resolving)` : ""}.
-          </span>
-          <Button size="sm" variant="outline" onClick={() => resumeScraping.mutate()} disabled={resumeScraping.isPending}>
-            {resumeScraping.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            Resume scraping
-          </Button>
-        </div>
-      )}
+      {pendingAction
+        ? <PendingActionBanner pendingAction={pendingAction} />
+        : <JobStatusBanners job={j} domainStats={domainStats.data} resumePending={resumeScraping.isPending} onResume={() => resumeScraping.mutate()} />}
 
       <Tabs defaultValue="timeline">
         <TabsList>
@@ -557,136 +295,19 @@ export default function JobDetail() {
           <TabsTrigger value="logs">Logs</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="timeline">
-          <JobTimeline jobId={id} />
-        </TabsContent>
-
+        <TabsContent value="timeline"><JobTimeline jobId={id} /></TabsContent>
         <TabsContent value="contacts">
-          <SectionCard title="Contact records" noPadding>
-            <div className="flex items-center gap-3 px-5 py-3 border-b border-border">
-              <Select value={contactsFilter} onValueChange={setContactsFilter}>
-                <SelectTrigger className="w-[280px]"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={id}>This job</SelectItem>
-                  <SelectItem value="all">All jobs</SelectItem>
-                  {(allJobs.data ?? []).filter((x) => x.id !== id).map((x) => (
-                    <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <span className="text-sm text-muted-foreground">{jobContacts.length} record{jobContacts.length === 1 ? "" : "s"}</span>
-            </div>
-            {jobContacts.length === 0 ? <EmptyState description="No contacts yet for this job." /> : (
-              <Table>
-                <TableHeader><TableRow><TableHead>Company</TableHead><TableHead>Type</TableHead><TableHead>Value</TableHead><TableHead>Source</TableHead><TableHead>Found</TableHead></TableRow></TableHeader>
-                <TableBody>
-                  {jobContacts.slice(0, 100).map((c) => (
-                    <TableRow key={c.id}>
-                      <TableCell className="font-medium">{c.companyName}</TableCell>
-                      <TableCell><ContactTypeBadge type={c.contactType} /></TableCell>
-                      <TableCell className="font-mono text-xs">{c.contactValue}</TableCell>
-                      <TableCell className="text-muted-foreground text-xs truncate max-w-[200px]">{c.sourceUrl}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{fmtRelative(c.foundAt)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </SectionCard>
+          <JobContactsTab jobId={id} contacts={jobContacts} allJobs={allJobs.data ?? []} filter={contactsFilter} onFilterChange={setContactsFilter} />
         </TabsContent>
-
-        <TabsContent value="people">
-          <SectionCard title="People records" noPadding>
-            {jobPeople.length === 0 ? <EmptyState description="No people records yet for this job." /> : (
-              <Table>
-                <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Role</TableHead><TableHead>Department</TableHead><TableHead>Company</TableHead><TableHead>Found</TableHead></TableRow></TableHeader>
-                <TableBody>
-                  {jobPeople.map((p) => (
-                    <TableRow key={p.id}>
-                      <TableCell className="font-medium">{p.fullName}</TableCell>
-                      <TableCell>{p.roleTitle ?? "—"}</TableCell>
-                      <TableCell className="text-muted-foreground">{p.department ?? "—"}</TableCell>
-                      <TableCell>{p.companyName}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{fmtRelative(p.foundAt)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </SectionCard>
-        </TabsContent>
-
-        <TabsContent value="pages">
-          <SectionCard title="Source pages crawled" noPadding>
-            {(sourcePages.data ?? []).length === 0 ? <EmptyState description="No pages crawled yet." /> : (
-              <Table>
-                <TableHeader><TableRow><TableHead>URL</TableHead><TableHead>Type</TableHead><TableHead>Status</TableHead><TableHead>Crawled</TableHead></TableRow></TableHeader>
-                <TableBody>
-                  {(sourcePages.data ?? []).map((p) => (
-                    <TableRow key={p.id}>
-                      <TableCell className="font-mono text-xs truncate max-w-[400px]">{p.url}</TableCell>
-                      <TableCell className="text-muted-foreground">{p.pageType}</TableCell>
-                      <TableCell className="text-muted-foreground">{p.statusCode ?? "—"}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{fmtRelative(p.crawledAt)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </SectionCard>
-        </TabsContent>
-
-        <TabsContent value="logs">
-          <SectionCard title="Activity log" noPadding>
-            <div className="flex items-center gap-2 flex-wrap px-5 py-3 border-b border-border">
-              {([
-                { key: "all", label: "All", n: logCounts.all },
-                { key: "done", label: "Companies done", n: logCounts.done },
-                { key: "errors", label: "Errors", n: logCounts.errors },
-                { key: "shutdown", label: "Shutdown", n: logCounts.shutdown },
-                { key: "resolver", label: "Resolver", n: logCounts.resolver },
-              ] as { key: LogFilter; label: string; n: number }[]).map((c) => (
-                <button
-                  key={c.key}
-                  onClick={() => setLogFilter(c.key)}
-                  className={cn(
-                    "text-xs px-2.5 py-1 rounded-full border transition-colors",
-                    logFilter === c.key
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background text-muted-foreground border-border hover:bg-muted",
-                  )}
-                >
-                  {c.label} · {c.n}
-                </button>
-              ))}
-              <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-                {filteredLogs.length} of {logCounts.all}
-              </span>
-            </div>
-            <div className="divide-y divide-border max-h-[500px] overflow-auto scrollbar-thin font-mono text-xs">
-              {logCounts.all === 0 && <EmptyState description="No log entries yet." />}
-              {logCounts.all > 0 && filteredLogs.length === 0 && (
-                <EmptyState description="No log entries match this filter." />
-              )}
-              {filteredLogs.map((l) => (
-                <div key={l.id} className="px-5 py-2 flex items-start gap-3">
-                  <span className={
-                    l.level === "error" ? "text-destructive" :
-                    l.level === "warn" ? "text-warning" :
-                    l.level === "success" ? "text-success" : "text-muted-foreground"
-                  }>[{l.level}]</span>
-                  <span className="text-muted-foreground shrink-0">{fmtRelative(l.createdAt)}</span>
-                  <span>{l.message}</span>
-                </div>
-              ))}
-            </div>
-          </SectionCard>
-        </TabsContent>
+        <TabsContent value="people"><JobPeopleTab people={jobPeople} /></TabsContent>
+        <TabsContent value="pages"><JobSourcePagesTab pages={sourcePages.data ?? []} /></TabsContent>
+        <TabsContent value="logs"><JobLogsPanel logs={logs.data ?? []} /></TabsContent>
       </Tabs>
     </div>
   );
 }
 
+// ---------- Timeline (kept inline; tightly coupled to realtime channel) ----------
 const TIMELINE_EVENT_TYPES: TimelineEventType[] = ["pages_discovered", "page_crawled", "emails_found", "people_extracted", "company_started", "company_finished", "resolve_started", "resolve_deferred", "resolve_completed"];
 type FilterKey = "all" | "discovered" | "crawled" | "emails" | "people" | "resolver";
 const RESOLVER_EVENTS: TimelineEventType[] = ["resolve_started", "resolve_deferred", "resolve_completed"];
@@ -704,19 +325,19 @@ interface TimelineRow {
   level: string;
   message: string;
   createdAt: string;
-  meta: any;
+  meta: Record<string, unknown>;
   event: TimelineEventType | null;
 }
 
-function rowFromDb(r: any): TimelineRow {
-  const ev = r.meta_json?.event;
+function rowFromDb(r: { id: string; level: string; message: string; created_at: string; meta_json: Record<string, unknown> | null }): TimelineRow {
+  const ev = (r.meta_json as { event?: string } | null)?.event;
   return {
     id: r.id,
     level: r.level,
     message: r.message,
     createdAt: r.created_at,
-    meta: r.meta_json ?? {},
-    event: TIMELINE_EVENT_TYPES.includes(ev) ? ev : null,
+    meta: (r.meta_json ?? {}) as Record<string, unknown>,
+    event: TIMELINE_EVENT_TYPES.includes(ev as TimelineEventType) ? (ev as TimelineEventType) : null,
   };
 }
 
@@ -740,7 +361,7 @@ function JobTimeline({ jobId }: { jobId: string }) {
         .order("created_at", { ascending: false })
         .limit(300);
       if (cancelled) return;
-      setRows((data ?? []).map(rowFromDb).filter((r) => r.event !== null));
+      setRows((data ?? []).map((r) => rowFromDb(r as never)).filter((r) => r.event !== null));
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -750,7 +371,7 @@ function JobTimeline({ jobId }: { jobId: string }) {
     const channel = supabase
       .channel(`timeline-${jobId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "crawl_logs", filter: `crawl_job_id=eq.${jobId}` }, (payload) => {
-        const row = rowFromDb(payload.new);
+        const row = rowFromDb(payload.new as never);
         if (!row.event) return;
         if (paused) {
           pendingRef.current = [row, ...pendingRef.current];
@@ -785,10 +406,11 @@ function JobTimeline({ jobId }: { jobId: string }) {
   const counts = useMemo(() => {
     const c = { discovered: 0, crawled: 0, emails: 0, people: 0 };
     for (const r of rows) {
-      if (r.event === "pages_discovered") c.discovered += r.meta?.count ?? 0;
+      const m = r.meta as { count?: number; person_emails?: number; generic_emails?: number };
+      if (r.event === "pages_discovered") c.discovered += m.count ?? 0;
       else if (r.event === "page_crawled") c.crawled += 1;
-      else if (r.event === "emails_found") c.emails += (r.meta?.person_emails ?? 0) + (r.meta?.generic_emails ?? 0);
-      else if (r.event === "people_extracted") c.people += r.meta?.count ?? 0;
+      else if (r.event === "emails_found") c.emails += (m.person_emails ?? 0) + (m.generic_emails ?? 0);
+      else if (r.event === "people_extracted") c.people += m.count ?? 0;
     }
     return c;
   }, [rows]);
@@ -796,7 +418,6 @@ function JobTimeline({ jobId }: { jobId: string }) {
   const resolverCount = useMemo(() => rows.filter((r) => r.event && RESOLVER_EVENTS.includes(r.event)).length, [rows]);
 
   const deferred = useMemo(() => {
-    // rows are newest-first; find latest resolve_* event
     for (const r of rows) {
       if (r.event === "resolve_completed") return null;
       if (r.event === "resolve_deferred") return r;
@@ -817,9 +438,10 @@ function JobTimeline({ jobId }: { jobId: string }) {
   return (
     <div className="space-y-4">
       {deferred && (() => {
-        const processed = deferred.meta?.processed ?? 0;
-        const remaining = deferred.meta?.remaining ?? 0;
-        const total = deferred.meta?.total ?? (processed + remaining);
+        const m = deferred.meta as { processed?: number; remaining?: number; total?: number; wave_seconds?: number };
+        const processed = m.processed ?? 0;
+        const remaining = m.remaining ?? 0;
+        const total = m.total ?? (processed + remaining);
         const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
         return (
           <div className="rounded-md border border-warning/40 bg-warning/5 px-4 py-3">
@@ -832,7 +454,7 @@ function JobTimeline({ jobId }: { jobId: string }) {
             </div>
             <Progress value={pct} className="h-1.5" />
             <p className="text-xs text-muted-foreground mt-2">
-              Last batch processed {deferred.meta?.wave_seconds ?? 0}s ago · continuing in background…
+              Last batch processed {m.wave_seconds ?? 0}s ago · continuing in background…
             </p>
           </div>
         );
