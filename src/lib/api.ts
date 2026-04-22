@@ -502,7 +502,10 @@ export const api = {
     return (data ?? []).map(mapLog);
   },
   async addLog(jobId: string, level: CrawlLogRow["level"], message: string, meta_json?: LogMetaJson) {
-    await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level, message, meta_json: meta_json ?? null });
+    const row = meta_json
+      ? { crawl_job_id: jobId, level, message, meta_json: meta_json as unknown as Database["public"]["Tables"]["crawl_logs"]["Insert"]["meta_json"] }
+      : { crawl_job_id: jobId, level, message };
+    await supabase.from("crawl_logs").insert(row);
   },
 
   // Source pages
