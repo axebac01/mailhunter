@@ -12,9 +12,29 @@ export type ContactType = Database["public"]["Enums"]["contact_type"];
 export type Weekday = Database["public"]["Enums"]["weekday"];
 
 // ---------- Personal-email guard ----------
-// Disallows first.last@, first_last@, first-last@ shaped local parts.
 const PERSONAL_EMAIL_RE = /^[a-z]+[._-][a-z]+@/i;
 export const isPersonalEmail = (v: string) => PERSONAL_EMAIL_RE.test(v);
+
+// ---------- Typed metaJson shape ----------
+export interface LogMetaJson {
+  event?: string;
+  duration_ms?: number;
+  reason?: string;
+  count?: number;
+  processed?: number;
+  remaining?: number;
+  total?: number;
+  wave_seconds?: number;
+  person_emails?: number;
+  generic_emails?: number;
+  [k: string]: unknown;
+}
+
+export interface JobMetaJson {
+  paused_reason?: string;
+  paused_at?: string;
+  [k: string]: unknown;
+}
 
 // ---------- Normalized row types ----------
 export interface JobRow {
@@ -45,7 +65,7 @@ export interface JobRow {
   updatedAt: string;
   lastRunAt: string | null;
   sourceType: Database["public"]["Enums"]["source_type"];
-  metaJson: Record<string, unknown> | null;
+  metaJson: JobMetaJson | null;
 }
 
 export interface CompanyRow {
@@ -130,6 +150,7 @@ export interface CrawlLogRow {
   level: Database["public"]["Enums"]["crawl_log_level"];
   message: string;
   createdAt: string;
+  metaJson: LogMetaJson | null;
 }
 
 export interface SourcePageRow {
@@ -163,7 +184,7 @@ const mapJob = (r: DB["crawl_jobs"]["Row"]): JobRow => ({
   endTime: r.allowed_end_time?.slice(0, 5) ?? "18:00",
   allowedDays: r.allowed_days ?? [],
   collectGenericEmails: r.include_generic_emails,
-  collectPersonEmails: (r as any).include_person_emails ?? false,
+  collectPersonEmails: r.include_person_emails ?? false,
   collectPhones: r.include_phones,
   collectContactForms: r.include_contact_forms,
   collectPersonNames: r.include_contact_person_names,
@@ -180,7 +201,7 @@ const mapJob = (r: DB["crawl_jobs"]["Row"]): JobRow => ({
   updatedAt: r.updated_at,
   lastRunAt: r.last_run_at,
   sourceType: r.source_type,
-  metaJson: ((r as any).meta_json ?? null) as Record<string, unknown> | null,
+  metaJson: (r.meta_json ?? null) as JobMetaJson | null,
 });
 
 const mapCompany = (r: DB["companies"]["Row"]): CompanyRow => ({
@@ -211,6 +232,95 @@ const mapImport = (r: DB["imports"]["Row"]): ImportRow => ({
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
+
+type ContactJoined = {
+  id: string;
+  contact_type: ContactType;
+  value: string;
+  source_url: string;
+  found_at: string;
+  company_id: string;
+  crawl_job_id: string | null;
+  import_id: string | null;
+  companies: { name: string; domain: string | null; country: string | null; industry: string | null } | null;
+  crawl_jobs: { name: string } | null;
+};
+
+const mapContact = (r: ContactJoined): ContactRow => ({
+  id: r.id,
+  companyId: r.company_id,
+  companyName: r.companies?.name ?? "—",
+  domain: r.companies?.domain ?? null,
+  country: r.companies?.country ?? null,
+  industry: r.companies?.industry ?? null,
+  contactType: r.contact_type,
+  contactValue: r.value,
+  sourceUrl: r.source_url,
+  foundAt: r.found_at,
+  jobId: r.crawl_job_id,
+  jobName: r.crawl_jobs?.name ?? null,
+  importId: r.import_id,
+});
+
+type PersonJoined = {
+  id: string;
+  full_name: string;
+  role_title: string | null;
+  department: string | null;
+  source_url: string;
+  found_at: string;
+  company_id: string;
+  crawl_job_id: string | null;
+  import_id: string | null;
+  companies: { name: string; domain: string | null; country: string | null; industry: string | null } | null;
+  crawl_jobs: { name: string } | null;
+};
+
+const mapPerson = (r: PersonJoined): PersonRow => ({
+  id: r.id,
+  companyId: r.company_id,
+  companyName: r.companies?.name ?? "—",
+  domain: r.companies?.domain ?? null,
+  country: r.companies?.country ?? null,
+  industry: r.companies?.industry ?? null,
+  fullName: r.full_name,
+  roleTitle: r.role_title,
+  department: r.department,
+  sourceUrl: r.source_url,
+  foundAt: r.found_at,
+  jobId: r.crawl_job_id,
+  jobName: r.crawl_jobs?.name ?? null,
+  importId: r.import_id,
+});
+
+const mapLog = (r: DB["crawl_logs"]["Row"]): CrawlLogRow => ({
+  id: r.id,
+  jobId: r.crawl_job_id,
+  level: r.level,
+  message: r.message,
+  createdAt: r.created_at,
+  metaJson: (r.meta_json ?? null) as LogMetaJson | null,
+});
+
+// ---------- List query options ----------
+const MAX_PAGE = 500;
+
+export interface ListContactsOpts {
+  limit?: number;
+  offset?: number;
+  jobId?: string;
+  importId?: string;
+  type?: ContactType;
+  search?: string;
+}
+
+export interface ListPeopleOpts {
+  limit?: number;
+  offset?: number;
+  jobId?: string;
+  importId?: string;
+  search?: string;
+}
 
 // ---------- Queries ----------
 export const api = {
@@ -294,55 +404,39 @@ export const api = {
     return mapCompany(data);
   },
 
-  // Contacts (joined)
-  async listContacts(): Promise<ContactRow[]> {
-    const { data, error } = await supabase
+  // Contacts (joined) — server-side filterable
+  async listContacts(opts: ListContactsOpts = {}): Promise<ContactRow[]> {
+    const limit = Math.min(opts.limit ?? 2000, MAX_PAGE);
+    const offset = opts.offset ?? 0;
+    let q = supabase
       .from("contacts")
       .select("id, contact_type, value, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
-      .order("found_at", { ascending: false })
-      .limit(2000);
+      .order("found_at", { ascending: false });
+    if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
+    if (opts.importId) q = q.eq("import_id", opts.importId);
+    if (opts.type) q = q.eq("contact_type", opts.type);
+    if (opts.search) q = q.ilike("value", `%${opts.search}%`);
+    q = q.range(offset, offset + limit - 1);
+    const { data, error } = await q;
     if (error) throw error;
-    return (data ?? []).map((r: any) => ({
-      id: r.id,
-      companyId: r.company_id,
-      companyName: r.companies?.name ?? "—",
-      domain: r.companies?.domain ?? null,
-      country: r.companies?.country ?? null,
-      industry: r.companies?.industry ?? null,
-      contactType: r.contact_type,
-      contactValue: r.value,
-      sourceUrl: r.source_url,
-      foundAt: r.found_at,
-      jobId: r.crawl_job_id,
-      jobName: r.crawl_jobs?.name ?? null,
-      importId: r.import_id,
-    }));
+    return (data ?? []).map((r) => mapContact(r as unknown as ContactJoined));
   },
 
-  // People
-  async listPeople(): Promise<PersonRow[]> {
-    const { data, error } = await supabase
+  // People — server-side filterable
+  async listPeople(opts: ListPeopleOpts = {}): Promise<PersonRow[]> {
+    const limit = Math.min(opts.limit ?? 2000, MAX_PAGE);
+    const offset = opts.offset ?? 0;
+    let q = supabase
       .from("contact_people")
       .select("id, full_name, role_title, department, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
-      .order("found_at", { ascending: false })
-      .limit(2000);
+      .order("found_at", { ascending: false });
+    if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
+    if (opts.importId) q = q.eq("import_id", opts.importId);
+    if (opts.search) q = q.ilike("full_name", `%${opts.search}%`);
+    q = q.range(offset, offset + limit - 1);
+    const { data, error } = await q;
     if (error) throw error;
-    return (data ?? []).map((r: any) => ({
-      id: r.id,
-      companyId: r.company_id,
-      companyName: r.companies?.name ?? "—",
-      domain: r.companies?.domain ?? null,
-      country: r.companies?.country ?? null,
-      industry: r.companies?.industry ?? null,
-      fullName: r.full_name,
-      roleTitle: r.role_title,
-      department: r.department,
-      sourceUrl: r.source_url,
-      foundAt: r.found_at,
-      jobId: r.crawl_job_id,
-      jobName: r.crawl_jobs?.name ?? null,
-      importId: r.import_id,
-    }));
+    return (data ?? []).map((r) => mapPerson(r as unknown as PersonJoined));
   },
 
   // Imports
@@ -405,16 +499,10 @@ export const api = {
       .order("created_at", { ascending: false })
       .limit(limit);
     if (error) throw error;
-    return (data ?? []).map((r) => ({
-      id: r.id,
-      jobId: r.crawl_job_id,
-      level: r.level,
-      message: r.message,
-      createdAt: r.created_at,
-    }));
+    return (data ?? []).map(mapLog);
   },
-  async addLog(jobId: string, level: CrawlLogRow["level"], message: string) {
-    await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level, message });
+  async addLog(jobId: string, level: CrawlLogRow["level"], message: string, meta_json?: LogMetaJson) {
+    await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level, message, meta_json: meta_json ?? null });
   },
 
   // Source pages
@@ -485,8 +573,7 @@ export const api = {
     if (r2.error) throw r2.error;
     const r3 = await supabase.from("source_pages").delete().eq("crawl_job_id", jobId);
     if (r3.error) throw r3.error;
-    // Also remove synthetic demo companies generated by this job's simulator.
-    const r3b = await (supabase.from("companies") as any).delete().eq("created_by_job_id", jobId);
+    const r3b = await supabase.from("companies").delete().eq("created_by_job_id", jobId);
     if (r3b.error) throw r3b.error;
     const r4 = await supabase.from("crawl_jobs").update({
       contacts_found: 0, people_found: 0, pages_crawled: 0, companies_found: 0, progress: 0,
