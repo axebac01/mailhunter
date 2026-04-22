@@ -502,14 +502,29 @@ export default function JobDetail() {
           })()}
         </div>
       ) : (j.status === "paused" || j.status === "stopped") && (
-        <div className={cn(
-          "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
-          j.status === "paused" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
-        )}>
-          {j.status === "paused"
-            ? <span>Scraper paused. Click <strong>Start</strong> to resume from where it left off.</span>
-            : <span>Scraper stopped. Click <strong>Start</strong> to resume.</span>}
-        </div>
+        <>
+          {j.status === "paused" && (j.metaJson as any)?.paused_reason === "firecrawl_payment_required" && (
+            <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <div className="font-medium text-destructive">Auto-paused — Firecrawl ran out of credits.</div>
+                <div className="text-muted-foreground mt-0.5">
+                  Top up your Firecrawl account, then click <strong>Start</strong> to continue domain resolution. Unresolved companies were marked as failed and can be retried after resuming.
+                </div>
+              </div>
+              <Button asChild size="sm" variant="outline">
+                <a href="https://www.firecrawl.dev/app/billing" target="_blank" rel="noreferrer">Open Firecrawl</a>
+              </Button>
+            </div>
+          )}
+          <div className={cn(
+            "mb-3 rounded-md border px-4 py-3 text-sm flex items-center gap-2",
+            j.status === "paused" ? "border-warning/40 bg-warning/10" : "border-border bg-muted"
+          )}>
+            {j.status === "paused"
+              ? <span>Scraper paused. Click <strong>Start</strong> to resume from where it left off.</span>
+              : <span>Scraper stopped. Click <strong>Start</strong> to resume.</span>}
+          </div>
+        </>
       )}
 
       {j.sourceType === "uploaded" && j.status === "running" && domainStats.data && domainStats.data.unresolved > 0 && (
