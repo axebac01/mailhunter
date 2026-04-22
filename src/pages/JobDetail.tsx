@@ -219,12 +219,12 @@ export default function JobDetail() {
                 <Search className="h-4 w-4" /> {resolveDomains.isPending ? "Resolving…" : "Resolve domains"}
               </Button>
             )}
-            {j.sourceType === "uploaded" && (domainStats.data?.failed ?? 0) > 0 && (
+            {j.sourceType === "uploaded" && (domainStatsData?.failed ?? 0) > 0 && (
               <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate({ retryFailed: true })} disabled={resolveDomains.isPending}>
-                <Search className="h-4 w-4" /> Retry failed ({domainStats.data?.failed})
+                <Search className="h-4 w-4" /> Retry failed ({domainStatsData?.failed})
               </Button>
             )}
-            {j.sourceType === "uploaded" && (domainStats.data?.total ?? 0) > 0 && (
+            {j.sourceType === "uploaded" && (domainStatsData?.total ?? 0) > 0 && (
               <Button variant="outline" size="sm" onClick={() => resolveDomains.mutate({ reresolveAll: true })} disabled={resolveDomains.isPending}>
                 <Search className="h-4 w-4" /> Re-resolve all
               </Button>
