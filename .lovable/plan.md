@@ -2,65 +2,92 @@
 
 ## Goal
 
-Stop the infinite "Waiting on domain resolution…" loop when Firecrawl returns **HTTP 402 / payment_required**. Auto-pause the job, surface a clear actionable error state, and prevent the worker from re-invoking until credits are restored.
+Polish the codebase to "excellence": improve maintainability, type-safety, perceived performance, and remove the largest sources of duplication — without any visual regressions or feature changes.
 
-## Problem (current behavior)
+## Scope
 
-When `resolve-domains-batch` hits 402:
-1. It logs *"Firecrawl returned 402 — top up to continue"* and returns.
-2. Affected companies stay in `domain_status: pending` (not `failed`).
-3. `scrape-emails-batch` sees `pendingResolution.length > 0` and re-invokes itself every 15s **forever**, spamming logs.
-4. Job stays `running` with no clear failure signal.
+Five focused refactors. No backend, schema, or UX changes. Pure code-quality work.
 
-## Fix — three coordinated changes
+---
 
-### 1. Resolver: mark unresolved companies as `failed` on 402
+### 1. Split `JobDetail.tsx` (886 lines → ~300)
 
-In `supabase/functions/resolve-domains-batch/index.ts`, in the `paymentErr` branch (around line 552 and final summary block ~585):
+Extract self-contained sub-components into `src/components/jobDetail/`:
 
-- After detecting `paymentErr`, **bulk-update all unprocessed companies** in this run (`todo` items not yet resolved + the `remaining` deferred ids) to `domain_status = 'failed'`. This prevents the scraper from waiting on them.
-- Keep `payment_required: true` flag on the `resolve_completed` log (already present).
+- **`PendingActionBanner.tsx`** — the Pausing/Stopping banner + `CountdownRing` + `estimateWaveMs` helper.
+- **`JobLogsPanel.tsx`** — the entire "Logs" tab: filter chips, counts, filtered list, empty state.
+- **`JobContactsTab.tsx`**, **`JobPeopleTab.tsx`**, **`JobSourcePagesTab.tsx`** — the three table tabs.
+- **`JobStatusBanners.tsx`** — paused / stopped / firecrawl-402 / completed-early banners (currently inline ~80 lines).
+- **`usePendingAction.ts`** hook — encapsulates sessionStorage rehydration, rAF tick loop, worker-exit detection, 60s timeout fallback.
 
-### 2. Resolver: pause the job on 402
+`JobDetail.tsx` becomes a thin orchestrator: queries + mutations + layout.
 
-In the same final block, when `paymentErr && jobId`:
+### 2. Type-safety pass
 
-- Update `crawl_jobs` → `status: 'paused'` and stamp `meta_json.paused_reason = 'firecrawl_payment_required'` (merge into existing `meta_json` if present).
-- Log a distinct shutdown event so the existing `JobTimeline` / Logs filter ("Shutdown") surfaces it: 
-  ```
-  level: "error",
-  message: "Job auto-paused — Firecrawl returned 402 (insufficient credits). Top up and resume.",
-  meta_json: { event: "auto_paused", reason: "firecrawl_payment_required" }
-  ```
-- Skip scheduling any continuation re-invoke (already handled — `remaining` self-call is gated by `!paymentErr`, good).
+- Add proper `LogRow` type with `metaJson?: { event?: string; duration_ms?: number; reason?: string }` and replace every `as any` on logs/metaJson with the typed shape.
+- Replace `(r as any).meta_json` and `(r as any).include_person_emails` in `mapJob` with proper Database type access (the Supabase types now include both columns).
+- Type `domainStats` query result explicitly (`{ total; resolved; unresolved; failed } | null`).
+- Tighten `resolveDomains` mutation: remove `as any` and use a discriminated `ResolveResult` type.
 
-### 3. Scraper: respect the auto-pause and stop polling
+### 3. Extract shared filtered-table pattern
 
-In `supabase/functions/scrape-emails-batch/index.ts`:
+`Contacts.tsx` and `People.tsx` share ~90% of the same logic (search + multi-select filters + pagination + selection + export). Extract:
 
-- The existing `job.status !== "running"` check at line 66 already exits cleanly once the resolver paused the job. **No code change needed there** — it works as soon as #2 lands.
-- Add a defensive secondary guard: before scheduling re-invoke at line 179, re-fetch `crawl_jobs.meta_json` and if `paused_reason === 'firecrawl_payment_required'`, log and exit instead of re-invoking. (Belt-and-suspenders against race where status update lags.)
+- **`useTableFilters<T>(rows, predicates)`** hook — search/filter/page/select state + memoized derived data.
+- **`<FilterBar>`** component — search input + select chips + clear button.
+- **`<PaginationFooter>`** component — "Showing X of Y · selected" + prev/next.
 
-### 4. Frontend: explain the auto-pause in the banner
+Result: each page drops to ~80 lines and bug fixes apply to both at once.
 
-In `src/pages/JobDetail.tsx`, the existing paused banner currently shows generic copy. Extend it:
+### 4. Performance: paginate at the database
 
-- When `job.status === 'paused'` AND `job.meta_json?.paused_reason === 'firecrawl_payment_required'`, render a destructive-tinted alert above the standard Resume controls:
-  > **Auto-paused — Firecrawl ran out of credits.** Top up your Firecrawl account, then click Resume to continue domain resolution.
-- Add a small "Open Firecrawl" link button (`https://www.firecrawl.dev/app/billing`).
-- On Resume: clear `meta_json.paused_reason` so the banner doesn't re-appear after a successful resume.
+Today `listContacts()` and `listPeople()` pull up to 2000 rows on every visit and filter client-side. Rework to:
+
+- Add `listContacts({ limit, offset, jobId?, importId?, type?, search? })` overloads using Supabase `.range()` and server-side `eq` / `ilike` / `in` filters.
+- Keep return shape identical — pages opt in by passing filter args; Dashboard's "latest 5" uses `limit: 5`.
+- JobDetail's "this job" filter goes server-side via `eq("crawl_job_id", jobId)`.
+- Fallback safety: never return more than 500 rows in a single call.
+
+### 5. Small correctness + DX wins
+
+- **`api.ts` mappers**: extract a `mapLog` and `mapPerson`/`mapContact` to dedupe the inline anonymous mappers in `listContacts` / `listPeople` / `listLogs`.
+- **`api.addLog`**: accept optional `meta_json` so callers can stop hand-rolling inserts (used by simulator + future code).
+- **`jobSimulator.ts`**: replace `Math.random()` density branches with a single `pickWithProbability` helper for readability; no behavior change.
+- **`App.tsx`**: lazy-load route components with `React.lazy` + a `Suspense` fallback (`<Skeleton />`) — first paint of `/` no longer pulls in CreateJob's heavy form code.
+- **`useToast.ts`**: lower `TOAST_REMOVE_DELAY` from `1_000_000` (16 minutes) to `5_000` — current value silently leaks dismissed toasts in memory.
+- **Replace `console`-silent catches** in jobSimulator (`.catch(() => {})`) with a single `logSimError` helper that at least `console.warn`s in dev so silent failures stop hiding bugs.
+
+---
 
 ## Files to change
 
-- `supabase/functions/resolve-domains-batch/index.ts` — bulk-fail unresolved companies, set `paused` status + `paused_reason`, add `auto_paused` log event.
-- `supabase/functions/scrape-emails-batch/index.ts` — defensive `paused_reason` re-check before re-invoke.
-- `src/pages/JobDetail.tsx` — dedicated auto-pause banner variant + clear `paused_reason` on resume.
+**New**
+- `src/components/jobDetail/PendingActionBanner.tsx`
+- `src/components/jobDetail/JobLogsPanel.tsx`
+- `src/components/jobDetail/JobContactsTab.tsx`
+- `src/components/jobDetail/JobPeopleTab.tsx`
+- `src/components/jobDetail/JobSourcePagesTab.tsx`
+- `src/components/jobDetail/JobStatusBanners.tsx`
+- `src/hooks/usePendingAction.ts`
+- `src/hooks/useTableFilters.ts`
+- `src/components/app/FilterBar.tsx`
+- `src/components/app/PaginationFooter.tsx`
+
+**Edited**
+- `src/pages/JobDetail.tsx` — reduce to orchestrator (~300 lines)
+- `src/pages/Contacts.tsx` — adopt `useTableFilters` + shared components
+- `src/pages/People.tsx` — same
+- `src/lib/api.ts` — typed mappers, server-side pagination/filters, typed `metaJson`
+- `src/lib/jobSimulator.ts` — `pickWithProbability` + dev warn helper
+- `src/App.tsx` — `React.lazy` routes + `Suspense`
+- `src/hooks/use-toast.ts` — fix toast removal delay
 
 ## Success criteria
 
-- Triggering 402 (any wave) results in: job flips to `paused` within seconds, all pending companies become `failed`, scraper stops re-invoking.
-- Logs show a single clear `auto_paused` entry instead of an endless "Waiting on domain resolution…" stream.
-- JobDetail banner explains the cause and provides a path forward (top up + Resume).
-- After topping up and clicking Resume, the job continues normally and the special banner disappears.
-- No backend schema changes (uses existing `crawl_jobs.meta_json` jsonb column).
+- `JobDetail.tsx` < 350 lines; each extracted component is independently readable and unit-testable.
+- Zero `as any` remaining on log / metaJson / job mappings.
+- Contacts and People pages share a single source of filter/pagination logic.
+- Dashboard initial paint loads ≤ 5 contact rows, not up to 2000.
+- Toast cleanup happens within 5s of dismissal instead of 16 minutes.
+- All existing routes, queries, and visible behavior unchanged — pure refactor.
 
