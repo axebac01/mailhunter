@@ -27,10 +27,12 @@ import { JobLogsPanel } from "@/components/jobDetail/JobLogsPanel";
 import { JobContactsTab } from "@/components/jobDetail/JobContactsTab";
 import { JobPeopleTab } from "@/components/jobDetail/JobPeopleTab";
 import { JobSourcePagesTab } from "@/components/jobDetail/JobSourcePagesTab";
+import { DomainStatsError } from "@/components/jobDetail/DomainStatsError";
 import { useRef } from "react";
 import { cn } from "@/lib/utils";
 
 interface DomainStats { total: number; resolved: number; unresolved: number; failed: number }
+interface DomainStatsResult { stats: DomainStats | null; companyIdCount: number }
 
 export default function JobDetail() {
   const { id = "" } = useParams<{ id: string }>();
