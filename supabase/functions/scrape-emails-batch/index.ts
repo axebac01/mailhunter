@@ -171,6 +171,20 @@ Deno.serve(async (req) => {
     // Nothing to scrape this wave?
     if (todo.length === 0) {
       if (pendingResolution.length > 0) {
+        // Belt-and-suspenders: if the resolver auto-paused for payment, exit
+        // even if our cached `job.status` snapshot still says "running".
+        const { data: fresh } = await supabase
+          .from("crawl_jobs").select("status, meta_json").eq("id", jobId).maybeSingle();
+        const reason = (fresh?.meta_json as Record<string, unknown> | null)?.paused_reason;
+        if (fresh?.status !== "running" || reason === "firecrawl_payment_required") {
+          await supabase.from("crawl_logs").insert({
+            crawl_job_id: jobId, level: "warn",
+            message: `Worker exiting — job ${fresh?.status ?? "unknown"}${reason ? ` (reason: ${reason})` : ""}. No re-invoke scheduled.`,
+          });
+          return new Response(JSON.stringify({ skipped: true, reason: String(reason ?? fresh?.status) }), {
+            status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
         await supabase.from("crawl_logs").insert({
           crawl_job_id: jobId, level: "info",
           message: `Waiting on domain resolution: ${pendingResolution.length} of ${allCompanies.length} still pending. Re-checking in ${Math.round(REINVOKE_DELAY_MS / 1000)}s.`,
