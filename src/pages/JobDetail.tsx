@@ -293,22 +293,30 @@ export default function JobDetail() {
         <KpiCard label="Pages crawled" value={fmtNum(j.pagesCrawled)} icon={<Globe className="h-4 w-4" />} />
       </div>
 
-      {j.sourceType === "uploaded" && domainStats.data && (
+      {j.sourceType === "uploaded" && domainStatsData && (
         <div className="mb-3 rounded-md border border-border bg-card px-4 py-3 text-sm flex flex-wrap items-center gap-x-6 gap-y-1">
           <span className="font-medium">Domain resolution</span>
-          <span className="text-muted-foreground">{domainStats.data.total} companies</span>
-          <span className="text-success">✓ {domainStats.data.resolved} resolved</span>
-          <span className="text-warning">… {domainStats.data.unresolved} pending</span>
-          <span className="text-destructive">✗ {domainStats.data.failed} no domain found</span>
-          {domainStats.data.failed > 0 && (
+          <span className="text-muted-foreground">{domainStatsData.total} companies</span>
+          <span className="text-success">✓ {domainStatsData.resolved} resolved</span>
+          <span className="text-warning">… {domainStatsData.unresolved} pending</span>
+          <span className="text-destructive">✗ {domainStatsData.failed} no domain found</span>
+          {domainStatsData.failed > 0 && (
             <span className="text-xs text-muted-foreground ml-auto">Companies without a real domain are skipped — no fake emails are generated.</span>
           )}
         </div>
       )}
 
+      {j.sourceType === "uploaded" && domainStats.isError && domainStatsCompanyIdCount > 0 && (
+        <DomainStatsError
+          companyIdCount={domainStatsCompanyIdCount}
+          isFetching={domainStats.isFetching}
+          onRetry={() => domainStats.refetch()}
+        />
+      )}
+
       {pendingAction
         ? <PendingActionBanner pendingAction={pendingAction} />
-        : <JobStatusBanners job={j} domainStats={domainStats.data} resumePending={resumeScraping.isPending} onResume={() => resumeScraping.mutate()} />}
+        : <JobStatusBanners job={j} domainStats={domainStatsData} resumePending={resumeScraping.isPending} onResume={() => resumeScraping.mutate()} />}
 
       <Tabs defaultValue="timeline">
         <TabsList>
