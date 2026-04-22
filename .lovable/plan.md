@@ -2,48 +2,43 @@
 
 ## Goal
 
-Add quick filter chips above the **Logs** tab in JobDetail so users can narrow the activity log to the most useful subsets: completed companies, errors, and shutdown-related events (pause/stop/resume).
+Two small UX improvements on the **Create job** page (`src/pages/CreateJob.tsx`):
 
-## Scope
+1. Move the **Job name** field out of the "Basics" section and place it directly under the "Create job" page header.
+2. Redesign the **Allowed weekdays** picker so selected days are clearly distinguishable.
 
-Single-file change to `src/pages/JobDetail.tsx`, scoped to the existing **Logs** `TabsContent` block (lines ~595–612). The Timeline tab already has its own filters and is untouched.
+## Changes
 
-## Filter set
+### 1. Job name — surface at the top
 
-Five chips, single-select, default **All**:
+- Remove the `Job name` input from the "Basics" `SectionCard` (lines 292–295).
+- Add a new dedicated `SectionCard` titled **"Job name"** (description: *"Give this job a recognizable name"*) placed **above** the "Source" section, right under the `PageHeader`.
+- Keep the same `Input`, validation hookup, and asterisk indicator.
+- "Basics" then contains only Industry / Country / Max companies in a 3-column grid (or 2-col on smaller screens) — drop the `md:col-span-2` wrapper.
 
-| Chip            | Matches                                                                                          |
-|-----------------|--------------------------------------------------------------------------------------------------|
-| **All**         | every log row (current behavior)                                                                 |
-| **Companies done** | `meta_json.event === "company_finished"`                                                       |
-| **Errors**      | `level === "error"` OR `level === "warn"`                                                        |
-| **Shutdown**    | message contains any of: `paused by user`, `stopped by user`, `resumed`, `shutdown`, `aborted`   |
-| **Resolver**    | `meta_json.event` ∈ {`resolve_started`, `resolve_deferred`, `resolve_completed`}                 |
+### 2. Weekday picker redesign
 
-Each chip shows a count (e.g. *"Errors · 3"*) computed from the loaded `logs.data`.
+Replace the small uppercase `ToggleGroupItem` row with a more visually obvious selector:
 
-## UI
+- 7 evenly spaced **circular day pills** (~44×44 px) showing 3-letter day labels (Mon, Tue, …).
+- **Selected**: filled `bg-primary` background, `text-primary-foreground`, subtle ring/shadow, slight scale.
+- **Unselected**: `bg-muted`, muted foreground text, hover lightens.
+- Weekend days (Sat / Sun) get a subtle accent in the unselected state (lighter muted tone) to distinguish them from weekdays at a glance.
+- Below the row: small helper text showing the current selection summary, e.g. *"Mon–Fri selected (5 days)"* or *"No days selected"* in destructive color when empty.
+- Add two quick-action text buttons next to the label: **Weekdays** (Mon–Fri) and **Every day** for fast presets.
+- Keep the underlying state shape (`form.weekdays: Weekday[]`) and `update("weekdays", …)` unchanged — implement as plain buttons toggling array membership instead of `ToggleGroup`, for full styling control.
 
-- Reuse the chip styling pattern already used in `JobTimeline` (rounded-full pills, primary fill on active) for visual consistency.
-- Place the chip row inside the `SectionCard` header area, above the existing scroll container.
-- Add a small `"{filteredCount} of {totalCount}"` label on the right side of the chip row.
-- If the filter yields zero results, show an `EmptyState` with description *"No log entries match this filter."* instead of the empty list.
-
-## Implementation details
-
-- Add `const [logFilter, setLogFilter] = useState<"all" | "done" | "errors" | "shutdown" | "resolver">("all");` inside `JobDetail`.
-- Memoize `filteredLogs` from `logs.data` with a switch on `logFilter`.
-- Compute counts in a single pass `useMemo` so chip labels stay accurate as new logs stream in (logs already poll every 2.5s).
-- Keep the existing row rendering (level pill + relative time + message) unchanged.
+Keep all logic, validation, and submission identical. No backend or schema changes.
 
 ## Files to change
 
-- `src/pages/JobDetail.tsx` — add filter state, memoized counts + filtered list, chip row in the Logs tab, empty-state fallback.
+- `src/pages/CreateJob.tsx` — restructure sections (new top "Job name" card, slimmer "Basics"), and rewrite the weekday picker block in the Schedule section.
 
 ## Success criteria
 
-- Five chips appear above the activity log; clicking one instantly filters the visible rows.
-- Counts on chips reflect the current loaded logs and update as new entries stream in.
-- "Shutdown" surfaces the worker exit lines used by the Pause/Stop transition detection.
-- No backend, schema, or Timeline-tab changes.
+- "Job name" input appears in its own card directly under the page title, before "Source".
+- "Basics" no longer contains the name field.
+- Selected weekdays are immediately, unmistakably visible (filled colored pills vs muted ones).
+- Quick presets (**Weekdays**, **Every day**) work and update the selection.
+- Selection summary text reflects the current state.
 
