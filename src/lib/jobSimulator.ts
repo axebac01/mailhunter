@@ -92,7 +92,7 @@ function genSyntheticCompany(industry: string | null, country: string | null) {
 export function startSimulator(jobId: string) {
   if (tickers.has(jobId)) return;
   void maybeKickOffBatch(jobId);
-  const id = window.setInterval(() => tick(jobId).catch(() => {}), 4000);
+  const id = window.setInterval(() => tick(jobId).catch((e) => logSimError("tick failed", e)), 4000);
   tickers.set(jobId, id);
 }
 
@@ -110,7 +110,7 @@ async function maybeKickOffBatch(jobId: string) {
   const job = await api.getJob(jobId);
   if (!job || job.sourceType !== "uploaded" || job.status !== "running") return;
   batchInvoked.add(jobId);
-  supabase.functions.invoke("scrape-emails-batch", { body: { jobId } }).catch(() => {});
+  supabase.functions.invoke("scrape-emails-batch", { body: { jobId } }).catch((e) => logSimError("scrape-emails-batch invoke", e));
 }
 
 async function tick(jobId: string) {
@@ -142,7 +142,7 @@ async function tick(jobId: string) {
 
   // Seed a new synthetic company if pool is below max and we still have headroom.
   let newCompanyInserted = false;
-  if (pool.length < job.maxCompanies && Math.random() < 0.6) {
+  if (pool.length < job.maxCompanies && pickWithProbability(0.6)) {
     const { name, domain } = genSyntheticCompany(job.industry, job.country);
     const { data: inserted, error } = await supabase
       .from("companies")
@@ -192,7 +192,7 @@ async function tick(jobId: string) {
   let contactsDelta = 0;
   let peopleDelta = 0;
 
-  if (Math.random() < 0.5 && job.collectGenericEmails) {
+  if (pickWithProbability(0.5) && job.collectGenericEmails) {
     const value = `${pick(PREFIXES)}@${target.domain}`;
     const { error } = await supabase.from("contacts").insert({
       company_id: target.id,
@@ -213,7 +213,7 @@ async function tick(jobId: string) {
   const roleTitle = pick(ROLE_TITLES);
   const department = pick(DEPARTMENTS);
 
-  if (job.collectPersonEmails && Math.random() < 0.4) {
+  if (job.collectPersonEmails && pickWithProbability(0.4)) {
     const value = buildDemoPersonEmail(target.domain, firstName, lastName);
     const { error } = await supabase.from("contacts").insert({
       company_id: target.id,
@@ -228,7 +228,7 @@ async function tick(jobId: string) {
     }
   }
 
-  if ((job.collectPersonNames || job.collectPersonRoles || job.collectDepartments) && Math.random() < 0.45) {
+  if ((job.collectPersonNames || job.collectPersonRoles || job.collectDepartments) && pickWithProbability(0.45)) {
     const { error } = await supabase.from("contact_people").insert({
       company_id: target.id,
       crawl_job_id: jobId,
@@ -255,5 +255,5 @@ async function tick(jobId: string) {
 
 export async function resumeRunningJobs() {
   const { data } = await supabase.from("crawl_jobs").select("id, status").eq("status", "running");
-  (data ?? []).forEach((j: any) => startSimulator(j.id));
+  (data ?? []).forEach((j) => startSimulator(j.id));
 }
