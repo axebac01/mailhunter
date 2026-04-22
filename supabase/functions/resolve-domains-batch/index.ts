@@ -596,6 +596,51 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ---- Auto-pause on Firecrawl 402 ----
+    if (paymentErr && jobId) {
+      // 1) Mark every still-unresolved company in this run as failed so the
+      //    scraper stops waiting on them. Combines unprocessed `todo` items
+      //    with any deferred `remaining` ids.
+      const unprocessedIds = new Set<string>(remaining);
+      // Items whose status was never set to resolved/failed in this run
+      for (let k = processed; k < todo.length; k++) {
+        if (todo[k]?.id) unprocessedIds.add(todo[k].id);
+      }
+      const failIds = Array.from(unprocessedIds);
+      if (failIds.length > 0) {
+        const CHUNK = 200;
+        for (let i = 0; i < failIds.length; i += CHUNK) {
+          const slice = failIds.slice(i, i + CHUNK);
+          await supabase.from("companies")
+            .update({ domain_status: "failed" })
+            .in("id", slice);
+        }
+      }
+
+      // 2) Read existing meta_json to merge our reason flag in
+      const { data: cur } = await supabase
+        .from("crawl_jobs").select("meta_json").eq("id", jobId).maybeSingle();
+      const mergedMeta = {
+        ...((cur?.meta_json as Record<string, unknown> | null) ?? {}),
+        paused_reason: "firecrawl_payment_required",
+        paused_at: new Date().toISOString(),
+      };
+      await supabase.from("crawl_jobs")
+        .update({ status: "paused", meta_json: mergedMeta })
+        .eq("id", jobId);
+
+      // 3) Distinct shutdown event so the Logs "Shutdown" filter surfaces it
+      await supabase.from("crawl_logs").insert({
+        crawl_job_id: jobId, level: "error",
+        message: "Job auto-paused — Firecrawl returned 402 (insufficient credits). Top up and resume.",
+        meta_json: {
+          event: "auto_paused",
+          reason: "firecrawl_payment_required",
+          unresolved_failed: failIds.length,
+        },
+      });
+    }
+
     return new Response(JSON.stringify({
       resolved, failed, processed, total: todo.length,
       deferred: remaining.length, paymentRequired: paymentErr,
