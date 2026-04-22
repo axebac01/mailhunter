@@ -289,7 +289,10 @@ export default function JobDetail() {
 
   const resumeScraping = useMutation({
     mutationFn: async () => {
-      await api.updateJobStatus(id, "running");
+      // Clear any auto-pause reason flag so the dedicated banner disappears.
+      const currentMeta = (job.data?.metaJson ?? {}) as Record<string, unknown>;
+      const { paused_reason: _r, paused_at: _a, ...rest } = currentMeta;
+      await api.patchJob(id, { status: "running", meta_json: rest as any });
       const { data, error } = await supabase.functions.invoke("scrape-emails-batch", { body: { jobId: id } });
       if (error) throw error;
       return data;
