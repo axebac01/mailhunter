@@ -13,8 +13,28 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { fmtRelative } from "@/lib/format";
+import { cn } from "@/lib/utils";
+
+const WEEKDAYS: { key: Weekday; label: string; weekend?: boolean }[] = [
+  { key: "mon", label: "Mon" },
+  { key: "tue", label: "Tue" },
+  { key: "wed", label: "Wed" },
+  { key: "thu", label: "Thu" },
+  { key: "fri", label: "Fri" },
+  { key: "sat", label: "Sat", weekend: true },
+  { key: "sun", label: "Sun", weekend: true },
+];
+
+function summarizeWeekdays(days: Weekday[]): string {
+  if (days.length === 0) return "No days selected";
+  if (days.length === 7) return "Every day selected (7 days)";
+  const weekdayKeys: Weekday[] = ["mon", "tue", "wed", "thu", "fri"];
+  const isWeekdays = days.length === 5 && weekdayKeys.every((d) => days.includes(d));
+  if (isWeekdays) return "Mon–Fri selected (5 days)";
+  const ordered = WEEKDAYS.filter((w) => days.includes(w.key)).map((w) => w.label);
+  return `${ordered.join(", ")} (${days.length} day${days.length === 1 ? "" : "s"})`;
+}
 
 const INDUSTRIES = ["Software","Manufacturing","Finance","Healthcare","Logistics","Food & Beverage","Biotech","Aerospace","Real Estate","Media","Pharmaceuticals","Energy"];
 const COUNTRIES = ["United States","Germany","United Kingdom","France","Netherlands","Spain","Sweden","Italy","Japan","Norway","Denmark","Finland","Switzerland","Austria","Belgium","Portugal","Ireland"];
