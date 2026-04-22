@@ -318,11 +318,7 @@ export default function CreateJob() {
         </SectionCard>
 
         <SectionCard title="Basics" description="Identify the job">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="md:col-span-2">
-              <Label htmlFor="name">Job name *</Label>
-              <Input id="name" className="mt-1.5" placeholder="e.g. SaaS outreach — Germany Q2" value={form.name} onChange={(e) => update("name", e.target.value)} />
-            </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
             <div>
               <Label>Industry {sourceMode === "industry_country" ? "*" : <span className="text-muted-foreground font-normal">(optional)</span>}</Label>
               <Select value={form.industry} onValueChange={(v) => update("industry", v)}>
@@ -347,12 +343,68 @@ export default function CreateJob() {
         <SectionCard title="Schedule" description="When the scraper is allowed to run">
           <div className="space-y-4">
             <div>
-              <Label className="mb-2 block">Allowed weekdays</Label>
-              <ToggleGroup type="multiple" value={form.weekdays} onValueChange={(v) => update("weekdays", v as Weekday[])} className="justify-start">
-                {(["mon","tue","wed","thu","fri","sat","sun"] as Weekday[]).map((d) => (
-                  <ToggleGroupItem key={d} value={d} className="uppercase text-xs">{d}</ToggleGroupItem>
-                ))}
-              </ToggleGroup>
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                <Label className="block">Allowed weekdays</Label>
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => update("weekdays", ["mon","tue","wed","thu","fri"] as Weekday[])}
+                  >
+                    Weekdays
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => update("weekdays", ["mon","tue","wed","thu","fri","sat","sun"] as Weekday[])}
+                  >
+                    Every day
+                  </Button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Allowed weekdays">
+                {WEEKDAYS.map(({ key, label, weekend }) => {
+                  const selected = form.weekdays.includes(key);
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() =>
+                        update(
+                          "weekdays",
+                          (selected
+                            ? form.weekdays.filter((d) => d !== key)
+                            : [...form.weekdays, key]) as Weekday[],
+                        )
+                      }
+                      className={cn(
+                        "h-11 w-11 rounded-full text-xs font-semibold transition-all",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                        selected
+                          ? "bg-primary text-primary-foreground shadow-sm ring-2 ring-primary/30 scale-105"
+                          : weekend
+                            ? "bg-muted/50 text-muted-foreground hover:bg-muted"
+                            : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p
+                className={cn(
+                  "text-xs mt-2",
+                  form.weekdays.length === 0 ? "text-destructive" : "text-muted-foreground",
+                )}
+              >
+                {summarizeWeekdays(form.weekdays)}
+              </p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div><Label htmlFor="start">Start time</Label>
