@@ -15,9 +15,18 @@ export const CONTACT_EXPORT_FIELDS = [
 
 export const PEOPLE_EXPORT_FIELDS = [
   "company_name", "website", "domain", "country", "industry",
-  "full_name", "role_title", "department", "source_url", "found_at",
+  "first_name", "last_name", "full_name",
+  "role_title", "department", "source_url", "found_at",
   "job_name", "import_status",
 ] as const;
+
+function splitName(full: string | null | undefined): { first: string; last: string } {
+  if (!full) return { first: "", last: "" };
+  const parts = full.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { first: "", last: "" };
+  if (parts.length === 1) return { first: parts[0], last: "" };
+  return { first: parts[0], last: parts.slice(1).join(" ") };
+}
 
 export function projectContactRow(c: ContactRow) {
   return {
@@ -36,12 +45,15 @@ export function projectContactRow(c: ContactRow) {
 }
 
 export function projectPersonRow(p: PersonRow) {
+  const { first, last } = splitName(p.fullName);
   return {
     company_name: p.companyName,
     website: p.domain ? `https://www.${p.domain}` : "",
     domain: p.domain ?? "",
     country: p.country ?? "",
     industry: p.industry ?? "",
+    first_name: first,
+    last_name: last,
     full_name: p.fullName,
     role_title: p.roleTitle ?? "",
     department: p.department ?? "",
