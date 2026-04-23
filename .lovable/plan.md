@@ -1,52 +1,64 @@
 
 
-## Goal
+## Mål
 
-Make the `domainStats` query failure visible instead of silent. Today the query in `JobDetail.tsx` fails with HTTP 400 (URL too long, ~2,863 UUIDs in `id=in.(...)`) and the UI just shows nothing — banners that depend on `domainStats` never render and there is no clue why.
+Dela upp namnfältet i exporterade fil­er så att varje rad innehåller `first_name`, `last_name` **och** `full_name` istället för bara `full_name`.
 
-## Changes
+## Omfattning
 
-### 1. `src/pages/JobDetail.tsx` — instrument the `domainStats` query
+Endast personexporten (Persons-sidan, samt eventuella jobbexporter som innehåller personer). Kontakter (emails/telefon) påverkas inte – de saknar namn.
 
-- Capture the company-id count in a local before the `companies` lookup.
-- On query error: `console.error("[domainStats] query failed", { jobId, companyIdCount, error })`.
-- On success when `companyIdCount > 0` but `data` is missing/short: `console.warn("[domainStats] partial response", { requested, received })`.
-- Return a richer object: `{ stats, error, companyIdCount }` instead of just stats — keep `stats` shape backward-compatible with `JobStatusBanners`.
+## Ändringar
 
-### 2. New component `src/components/jobDetail/DomainStatsError.tsx`
+### `src/lib/exporters.ts`
 
-Small inline alert (uses existing `Alert` / `AlertDescription` from shadcn) shown only when:
-- `job.sourceType === "uploaded"` AND
-- `domainStatsQuery.error` is set OR (`companyIdCount > 0` AND `stats === null`)
+1. Lägg till en liten hjälpare:
+   ```ts
+   function splitName(full: string): { first: string; last: string } {
+     const parts = full.trim().split(/\s+/);
+     if (parts.length === 0 || parts[0] === "") return { first: "", last: "" };
+     if (parts.length === 1) return { first: parts[0], last: "" };
+     return { first: parts[0], last: parts.slice(1).join(" ") };
+   }
+   ```
+   - Ett ord → bara `first_name`.
+   - Två+ ord → första ordet = förnamn, resten = efternamn (hanterar mellannamn/dubbla efternamn rimligt, t.ex. "Anna Maria Svensson" → first="Anna", last="Maria Svensson").
 
-Content:
-- Title: "Couldn't load domain resolution stats"
-- One-line body: `"Tried to fetch status for {companyIdCount} companies but the request failed. Banners about resolution progress are hidden until this loads."`
-- A small "Retry" button calling `domainStatsQuery.refetch()`.
-- Tone: `variant="warning"` (muted yellow), not destructive — the rest of the page still works.
+2. Uppdatera `PEOPLE_EXPORT_FIELDS` så att kolumnordningen blir:
+   ```
+   company_name, website, domain, country, industry,
+   first_name, last_name, full_name,
+   role_title, department, source_url, found_at,
+   job_name, import_status
+   ```
 
-### 3. Wire it into `JobDetail.tsx`
+3. Uppdatera `projectPersonRow(p)` så att den returnerar:
+   ```ts
+   const { first, last } = splitName(p.fullName);
+   return {
+     ...,
+     first_name: first,
+     last_name: last,
+     full_name: p.fullName,
+     ...
+   };
+   ```
 
-- Render `<DomainStatsError />` directly above `<JobStatusBanners />`.
-- Pass `domainStats` (the `stats` field) to `JobStatusBanners` as before — no change to that component.
+Inga andra filer behöver ändras – `exportPeople` använder redan `projectPersonRow`, och CSV/XLSX-genereringen plockar kolumnerna automatiskt från objektet.
 
-### 4. Empty-state nuance
+## Edge cases
 
-When `companyIdCount === 0` (no companies imported yet for an uploaded job), do NOT show an error — that's a normal empty state, not a failure. Only the genuine HTTP error or "we asked for N but got nothing back" case triggers the alert.
+- Tomt/null-namn: båda fälten blir tomma strängar, `full_name` blir `""`.
+- Ett enda ord ("Madonna"): `first_name="Madonna"`, `last_name=""`.
+- Extra mellanslag normaliseras via `split(/\s+/)`.
 
-## Files to change
+## Inte i scope
 
-- `src/pages/JobDetail.tsx` — extend `domainStats` query, add console logging, render the new component.
-- `src/components/jobDetail/DomainStatsError.tsx` — new file.
+- Att lagra `first_name`/`last_name` i databasen (`contact_people` har bara `full_name`). Splitten görs vid export.
+- Kontakt-exporten (emails) – inga namn finns där.
 
-## Out of scope (deliberate)
+## Klart när
 
-The underlying URL-length bug (chunking the `id IN (...)` filter or switching to a join via `import_id`) is **not** fixed here. This task only adds visibility. A follow-up task can address the root cause.
-
-## Success criteria
-
-- When `domainStats` returns 400, the JobDetail page shows a clear inline warning with the requested count and a Retry button.
-- Console contains a single structured `[domainStats] query failed` entry with `jobId`, `companyIdCount`, and the error.
-- When `companyIdCount === 0`, no alert appears (clean empty state).
-- All existing banners (paused, firecrawl-402, completed-early) still render unchanged when `domainStats` succeeds.
+- En nedladdad people-CSV/XLSX innehåller kolumnerna `first_name`, `last_name`, `full_name` i den ordningen, korrekt ifyllda för alla rader.
+- Inga andra exportkolumner ändras.
 
