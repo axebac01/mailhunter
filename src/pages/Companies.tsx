@@ -29,6 +29,8 @@ export default function Companies() {
   const [search, setSearch] = useState("");
   const [country, setCountry] = useState<string>("all");
   const [industry, setIndustry] = useState<string>("all");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [outreachOpen, setOutreachOpen] = useState(false);
 
   const countries = useMemo(() => Array.from(new Set(companies.map((c) => c.country).filter(Boolean) as string[])).sort(), [companies]);
   const industries = useMemo(() => Array.from(new Set(companies.map((c) => c.industry).filter(Boolean) as string[])).sort(), [companies]);
