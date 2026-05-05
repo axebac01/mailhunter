@@ -65,7 +65,14 @@ export default function Companies() {
       <PageHeader
         title="Companies"
         description="All companies discovered or imported. Click a row to see contacts, people, and source pages."
-        actions={<ExportButton onExport={handleExport} disableSelected />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" disabled={selected.size === 0} onClick={() => setOutreachOpen(true)}>
+              <Send className="h-4 w-4" /> Skicka till Outreach ({selected.size})
+            </Button>
+            <ExportButton onExport={handleExport} disableSelected />
+          </div>
+        }
       />
 
       <Card className="mb-4 p-3">
