@@ -1,117 +1,97 @@
-## Mål
 
-Ladda upp en stor MySQL-dump över alla svenska bolag, gör den sökbar med filter på SNI/omsättning/anställda/geografi, och låt dig importera urval till `companies` för crawl-jobb.
+## Vad vi vet nu
 
-## Arkitektur
+Tre MySQL-dumpar i `~/Downloads/SCB_2.0/Företagsdata/`:
+
+| Fil | Tabell | Rader | Storlek |
+|---|---|---|---|
+| grunduppgifter.sql | grunduppgifter | ~1,2 M | 498 MB |
+| bokslutsuppgifter.sql | bokslutsuppgifter | ~3,96 M (flera år/bolag) | 1,75 GB |
+| styrelse.sql | styrelse | ~2,54 M | 268 MB |
+
+UTF-8 (utf8mb4). Alla kopplas via `OrgNr`. Filerna är för stora för browseruppladdning — vi kör konvertering + import på din maskin via skript jag genererar, sen `\copy` mot Lovable Cloud.
+
+## Kolumnmappning (klar)
+
+**grunduppgifter → `se_companies`:**
+
+| MySQL-kolumn | Postgres-kolumn |
+|---|---|
+| `OrgNr` | `org_nr` (PK) |
+| `Företagsnamn` | `name` |
+| `Postadress` | `street_address` |
+| `Postnummer` | `postal_code` |
+| `Postort` | `postal_city` |
+| `Telefon` | `phone` |
+| `Huvud SNI-kod` | `sni_code` |
+| `Huvud SNI-text` | `sni_text` |
+| `Kommun besöksadress` | `municipality` |
+| `Län besöksadress` | `county` |
+| `Bolagsordning_Korrekt` | `description` |
+| Allt övrigt (Bolagsform, F-skatt, Omsättningsintervall, Moder, Koncernmoder, etc.) | `raw` jsonb |
+
+`website` och `email` finns INTE i dumpen — de hittas senare via crawl-jobben.
+
+**bokslutsuppgifter → uppdaterar `se_companies` (senaste året per OrgNr):**
+
+| MySQL-kolumn | Postgres-kolumn |
+|---|---|
+| `Nettoomsättning` (fallback `OMSETTNING`), delas med 1000 | `revenue_ksek` |
+| `Antal anställda` | `employees` |
+| `Bokslutsperiodens slut` (första 4 tecken) | `fiscal_year` |
+
+Vi tar bara raden med högst `Bokslutsperiodens slut` per `OrgNr` (där `Slutkod='B'`).
+
+**styrelse → ny tabell `se_board_members`** (för "kontaktpersoner" senare):
 
 ```text
-MySQL dump (>2GB)
-  └─> Konvertering till Postgres COPY-format (sker utanför appen via skript)
-        └─> Import till ny tabell public.se_companies (read-only register)
-              └─> Ny sida /se-companies — filter + paginerad lista
-                    └─> "Importera valda till Companies" → upsert i companies
-                          └─> Existerande crawl/scrape-flöde tar vid
+org_nr text, name text, role text, person_nr text,
+appointed_at date, raw jsonb, id bigserial PK
++ index på org_nr och name
 ```
 
-`se_companies` ligger separat från `companies` — den är ett stort statiskt register, `companies` är ditt arbetsmaterial. Endast valda rader kopieras över.
+## Import-pipeline (engångsjobb)
 
-## Datamodell
+```text
+[din Mac]                                    [Lovable Cloud / Postgres]
+  *.sql (MySQL dump)
+    └─ Python-skript: parsa INSERT-statements
+        └─ skriv 3 CSV-filer:
+            se_companies_base.csv  (från grunduppgifter)
+            se_bokslut_latest.csv  (senaste året per OrgNr)
+            se_board.csv           (från styrelse)
+              └─ psql \copy direkt till databasen
+                  └─ SQL-merge: uppdatera se_companies med bokslutsdata
+```
 
-Ny tabell `public.se_companies`:
+Skriptet kör i strömmande läge — läser dumpfilerna rad för rad, behöver aldrig ladda hela 1,75 GB i minnet. För bokslutsuppgifter görs en första pass där vi sparar bara senaste året per OrgNr (i en dict på OrgNr → senaste rad).
 
-- `org_nr` text PK (organisationsnummer, unik nyckel)
-- `name` text not null
-- `sni_code` text — primär SNI-kod
-- `sni_text` text — bransch-beskrivning
-- `revenue_ksek` bigint — omsättning i tkr
-- `employees` int
-- `county` text — län
-- `municipality` text — kommun
-- `postal_code` text
-- `postal_city` text
-- `street_address` text
-- `website` text
-- `email` text
-- `phone` text
-- `description` text — verksamhetsbeskrivning (fritext)
-- `fiscal_year` int — år omsättning/anställda gäller
-- `raw` jsonb — övriga fält från dumpen som vi inte mappar nu
-- `imported_at` timestamptz default now()
+Estimerad tid: ~5–10 min konvertering + ~10–20 min `\copy` över wifi.
 
-Index (kritiskt för prestanda på 2M+ rader):
-- B-tree på `sni_code`, `county`, `municipality`
-- B-tree på `revenue_ksek`, `employees` (range-queries)
-- GIN på `to_tsvector('swedish', name || ' ' || coalesce(description,''))` för fritext (om du senare vill)
-- Unique index på `org_nr`
+## Vad jag bygger när du godkänner
 
-RLS: public read, ingen insert/update/delete från klient (importeras via skript med service-role).
+**1. Migration: lägg till `se_board_members`-tabell** + index på `se_companies(name)` för bättre namnsökning.
 
-## Importflödet (engångsjobb per dump)
+**2. Skript du kör lokalt:**
+- `scripts/convert_dumps.py` — parsar MySQL-dumparna → 3 CSV-filer i `/tmp/`. Beroenden: bara Python 3 standard library.
+- `scripts/import_to_cloud.sh` — kör `psql \copy` mot Lovable Cloud med din connection-string. Inkluderar också MERGE-steget som joinar bokslut → se_companies.
+- `scripts/README.md` — exakt vad du klistrar in i terminalen, steg för steg.
 
-Eftersom filen är >2GB kan den inte laddas upp via browsern. Flöde:
+**3. UI-uppdatering:**
+- `Omsättningsintervall`-filter (text-intervall finns på i princip alla bolag, även små som inte lämnar bokslut) som komplement till exakt `revenue_ksek`.
+- Visa antal styrelseledamöter i listan, klickbart till en dialog med namn/funktion.
+- "Importera till Companies" tar med styrelseledamöter som `contact_people` direkt (sparar ett crawl-steg för bolag där styrelsenamn räcker).
 
-1. **Du laddar upp dumpen** till sandboxen (eller lägger den i en publik URL jag kan hämta från).
-2. **Konvertera MySQL → Postgres COPY**: jag kör `pgloader` eller ett Python-skript (mysqldump-parser → CSV → `\copy`). Mappar fältnamnen i din dump till kolumnerna ovan; resten lagras i `raw` jsonb.
-3. **Bulk-import**: `psql \copy se_companies FROM 'companies.csv' CSV` eller streamat insert i batchar om 50k. Service-role nyckel, inte browser.
-4. **Skapa index efter import** (snabbare än under).
-5. **VACUUM ANALYZE** för planner-statistik.
+**4. Edge function-uppdatering:** `import-se-companies` skapar även `contact_people`-rader från `se_board_members` för valda bolag.
 
-Hela importen körs som en engångsoperation av mig via `code--exec` — ingen UI-uppladdning behövs.
+## Vad som krävs av dig
 
-## Sök-UI
+1. Godkänn planen.
+2. Sen får du en connection-string + 3 terminalkommandon att klistra in (`python3 convert_dumps.py`, sen `bash import_to_cloud.sh`). Jag guidar dig.
+3. Vänta ~20 min medan importen kör. Sen ligger 1,2 M svenska bolag sökbara på `/se-companies`.
 
-Ny sida `src/pages/SeCompanies.tsx` (route `/se-companies`, länk i sidebar):
+## Out of scope
 
-**Filter-rad:**
-- SNI-kod — multi-select från distinct lista, eller fritext-prefix ("47*" matchar 47.111, 47.112…)
-- Omsättning min/max (tkr)
-- Antal anställda min/max
-- Län — select från distinct
-- Kommun — select beroende på valt län
-- Fritext (matchar name/description)
-
-**Resultat:**
-- Tabell med checkboxes (samma mönster som Companies/Contacts)
-- Kolumner: namn, org.nr, SNI, omsättning, anställda, kommun
-- Server-side pagination (50/sida) — `range(from, to)` på Supabase
-- Visar total count
-
-**Bulk-action:**
-- "Importera N bolag till Companies" → edge function `import-se-companies` som upsertar till `companies`-tabellen (matchar på `domain` när website finns, annars på namn+kommun) och returnerar `{ inserted, updated, skipped }`. Sätter `notes` med org.nr-referens. Sen kan du köra `resolve-domain` + crawl som vanligt.
-
-## Edge function `import-se-companies`
-
-- Input: `{ org_nrs: string[] }`
-- Hämtar matchande rader från `se_companies`
-- Mappar till `companies`-format: `name`, `website`, `country='SE'`, `industry=sni_text`, `notes='org.nr: XXX, SNI: YYY'`
-- Upsert mot `companies` (dedupe på domain om finns)
-- Returnerar resultat
-
-## Filer
-
-**Nya:**
-- `supabase/migrations/...sql` — `se_companies` tabell + index + RLS
-- `supabase/functions/import-se-companies/index.ts`
-- `src/pages/SeCompanies.tsx`
-- `src/components/seCompanies/FilterBar.tsx` (eller inline)
-
-**Ändras:**
-- `src/App.tsx` — route
-- `src/components/app/AppSidebar.tsx` — meny-länk
-
-## Vad jag behöver från dig nu
-
-1. **Dumpen**: ladda upp den om den får plats (annars en signed URL jag kan curla från). En liten sample (typ första 1000 raderna eller `head -200 dump.sql`) först är bäst — då kan jag mappa kolumnerna exakt innan vi kör hela importen.
-2. **Källa**: är detta Bolagsverket, allabolag.se, eller annan källa? Påverkar fältnamn.
-
-## Out of scope (för nu)
-
-- Uppdatering/synk när du får en ny dump — det blir en TRUNCATE + re-import, manuellt.
-- Full-text GIN-index — läggs till senare om fritextsök blir långsam.
-- Historik / flera fiscal_year per bolag — vi tar senaste året per bolag.
-
-## Klart när
-
-- `se_companies` har miljontals rader och svar på filter-queries returnerar <1s.
-- `/se-companies` visar filterbar lista med pagination.
-- "Importera valda" skapar rader i `companies` och du kan köra crawl-jobb på dem.
+- Synk vid ny dump — blir `TRUNCATE` + re-import via samma skript.
+- Historiska bokslut (flera år per bolag) — vi tar bara senaste. Kan läggas till senare i egen tabell `se_bokslut_history` om du vill se trender.
+- Personnummer från styrelse-dumpen importeras till `se_board_members.person_nr` men exponeras INTE i UI (GDPR — visa bara namn + funktion).

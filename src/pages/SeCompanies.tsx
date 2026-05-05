@@ -106,7 +106,7 @@ export default function SeCompanies() {
       if (error) throw error;
       const r = data as any;
       if (r?.error) throw new Error(r.error);
-      toast.success(`Importerade ${r.inserted} bolag (${r.skipped} fanns redan)`);
+      toast.success(`Importerade ${r.inserted} bolag (${r.skipped} fanns redan) · ${r.peopleInserted ?? 0} styrelseledamöter`);
       setSelected(new Set());
     } catch (e: any) {
       toast.error(e?.message ?? "Import misslyckades");

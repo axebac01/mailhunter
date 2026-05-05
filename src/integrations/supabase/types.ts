@@ -562,6 +562,39 @@ export type Database = {
         }
         Relationships: []
       }
+      se_board_members: {
+        Row: {
+          appointed_at: string | null
+          id: number
+          imported_at: string
+          name: string
+          org_nr: string
+          person_nr: string | null
+          raw: Json | null
+          role: string | null
+        }
+        Insert: {
+          appointed_at?: string | null
+          id?: number
+          imported_at?: string
+          name: string
+          org_nr: string
+          person_nr?: string | null
+          raw?: Json | null
+          role?: string | null
+        }
+        Update: {
+          appointed_at?: string | null
+          id?: number
+          imported_at?: string
+          name?: string
+          org_nr?: string
+          person_nr?: string | null
+          raw?: Json | null
+          role?: string | null
+        }
+        Relationships: []
+      }
       se_companies: {
         Row: {
           county: string | null
@@ -577,6 +610,7 @@ export type Database = {
           postal_city: string | null
           postal_code: string | null
           raw: Json | null
+          revenue_interval: string | null
           revenue_ksek: number | null
           sni_code: string | null
           sni_text: string | null
@@ -597,6 +631,7 @@ export type Database = {
           postal_city?: string | null
           postal_code?: string | null
           raw?: Json | null
+          revenue_interval?: string | null
           revenue_ksek?: number | null
           sni_code?: string | null
           sni_text?: string | null
@@ -617,6 +652,7 @@ export type Database = {
           postal_city?: string | null
           postal_code?: string | null
           raw?: Json | null
+          revenue_interval?: string | null
           revenue_ksek?: number | null
           sni_code?: string | null
           sni_text?: string | null
