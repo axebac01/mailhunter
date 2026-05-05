@@ -174,6 +174,13 @@ export default function Companies() {
           </div>
         )}
       </Card>
+
+      <SendToOutreachDialog
+        open={outreachOpen}
+        onOpenChange={setOutreachOpen}
+        ids={Array.from(selected)}
+        sourceTable="companies"
+      />
     </div>
   );
 }
