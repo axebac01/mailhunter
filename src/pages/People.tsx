@@ -74,7 +74,14 @@ export default function People() {
       <PageHeader
         title="People"
         description="Public people metadata only — names, roles, and departments. Personal email addresses appear in Contacts, not here."
-        actions={<ExportButton selectedCount={t.selected.size} onExport={handleExport} />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" disabled={t.selected.size === 0} onClick={() => setOutreachOpen(true)}>
+              <Send className="h-4 w-4" /> Skicka till Outreach ({t.selected.size})
+            </Button>
+            <ExportButton selectedCount={t.selected.size} onExport={handleExport} />
+          </div>
+        }
       />
 
       <Card className="mb-4 p-3">
