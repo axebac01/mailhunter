@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Briefcase, PlusSquare, Upload, Mail, Users, Building2, Settings, Target } from "lucide-react";
+import { LayoutDashboard, Briefcase, PlusSquare, Upload, Mail, Users, Building2, Settings, Target, Database } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -23,6 +23,7 @@ const data = [
   { title: "Contacts", url: "/contacts", icon: Mail },
   { title: "People", url: "/people", icon: Users },
   { title: "Companies", url: "/companies", icon: Building2 },
+  { title: "SE Bolagsregister", url: "/se-companies", icon: Database },
 ];
 const sys = [{ title: "Settings", url: "/settings", icon: Settings }];
 

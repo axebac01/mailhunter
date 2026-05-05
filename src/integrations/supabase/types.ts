@@ -562,6 +562,69 @@ export type Database = {
         }
         Relationships: []
       }
+      se_companies: {
+        Row: {
+          county: string | null
+          description: string | null
+          email: string | null
+          employees: number | null
+          fiscal_year: number | null
+          imported_at: string
+          municipality: string | null
+          name: string
+          org_nr: string
+          phone: string | null
+          postal_city: string | null
+          postal_code: string | null
+          raw: Json | null
+          revenue_ksek: number | null
+          sni_code: string | null
+          sni_text: string | null
+          street_address: string | null
+          website: string | null
+        }
+        Insert: {
+          county?: string | null
+          description?: string | null
+          email?: string | null
+          employees?: number | null
+          fiscal_year?: number | null
+          imported_at?: string
+          municipality?: string | null
+          name: string
+          org_nr: string
+          phone?: string | null
+          postal_city?: string | null
+          postal_code?: string | null
+          raw?: Json | null
+          revenue_ksek?: number | null
+          sni_code?: string | null
+          sni_text?: string | null
+          street_address?: string | null
+          website?: string | null
+        }
+        Update: {
+          county?: string | null
+          description?: string | null
+          email?: string | null
+          employees?: number | null
+          fiscal_year?: number | null
+          imported_at?: string
+          municipality?: string | null
+          name?: string
+          org_nr?: string
+          phone?: string | null
+          postal_city?: string | null
+          postal_code?: string | null
+          raw?: Json | null
+          revenue_ksek?: number | null
+          sni_code?: string | null
+          sni_text?: string | null
+          street_address?: string | null
+          website?: string | null
+        }
+        Relationships: []
+      }
       source_pages: {
         Row: {
           company_id: string
@@ -616,6 +679,8 @@ export type Database = {
     }
     Functions: {
       clear_all_data: { Args: never; Returns: undefined }
+      show_limit: { Args: never; Returns: number }
+      show_trgm: { Args: { "": string }; Returns: string[] }
     }
     Enums: {
       contact_type: "generic_email" | "phone" | "contact_form" | "person_email"
