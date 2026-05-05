@@ -208,6 +208,15 @@ export default function ImportDetail() {
               {createJobMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               {imp.crawlJobId ? "Recreate job" : "Create job from matched"} ({matchedRows.length})
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={matchedRows.length === 0}
+              onClick={() => setOutreachOpen(true)}
+              title={matchedRows.length === 0 ? "Inga matchade companies att skicka" : undefined}
+            >
+              <Send className="h-4 w-4" /> Skicka till Outreach ({matchedRows.length})
+            </Button>
             <ExportButton selectedCount={selected.size} onExport={handleExport} />
           </div>
         }
