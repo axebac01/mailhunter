@@ -18,6 +18,7 @@ const Contacts = lazy(() => import("./pages/Contacts"));
 const People = lazy(() => import("./pages/People"));
 const Companies = lazy(() => import("./pages/Companies"));
 const CompanyDetail = lazy(() => import("./pages/CompanyDetail"));
+const SeCompanies = lazy(() => import("./pages/SeCompanies"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
