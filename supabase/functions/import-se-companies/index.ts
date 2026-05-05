@@ -42,15 +42,26 @@ Deno.serve(async (req) => {
       .in("org_nr", orgNrs);
     if (sErr) return json({ error: `se_companies query failed: ${sErr.message}` }, 500);
 
+    // Hämta styrelseledamöter för dessa bolag
+    const { data: board } = await supabase
+      .from("se_board_members")
+      .select("org_nr, name, role")
+      .in("org_nr", orgNrs);
+    const boardByOrg = new Map<string, { name: string; role: string | null }[]>();
+    for (const b of board ?? []) {
+      if (!boardByOrg.has(b.org_nr)) boardByOrg.set(b.org_nr, []);
+      boardByOrg.get(b.org_nr)!.push({ name: b.name, role: b.role });
+    }
+
     let inserted = 0;
     let skipped = 0;
+    let peopleInserted = 0;
     const errors: string[] = [];
 
     for (const row of source ?? []) {
       const domain = domainFromUrl(row.website);
       try {
-        // Dedupe: by domain if available, else by name+municipality
-        let exists = false;
+        let companyId: string | null = null;
         if (domain) {
           const { data: dup } = await supabase
             .from("companies")
@@ -58,10 +69,10 @@ Deno.serve(async (req) => {
             .eq("domain", domain)
             .limit(1)
             .maybeSingle();
-          if (dup) exists = true;
+          if (dup) companyId = dup.id;
         }
-        if (!exists) {
-          const { error: iErr } = await supabase.from("companies").insert({
+        if (!companyId) {
+          const { data: ins, error: iErr } = await supabase.from("companies").insert({
             name: row.name,
             website: row.website ?? null,
             domain,
@@ -69,18 +80,32 @@ Deno.serve(async (req) => {
             industry: row.sni_text ?? null,
             domain_status: domain ? "resolved" : "unresolved",
             notes: `org.nr: ${row.org_nr}${row.municipality ? ` · ${row.municipality}` : ""}`,
-          });
+          }).select("id").single();
           if (iErr) throw iErr;
+          companyId = ins.id;
           inserted++;
         } else {
           skipped++;
+        }
+
+        // Lägg till styrelseledamöter som contact_people
+        const members = boardByOrg.get(row.org_nr) ?? [];
+        if (members.length && companyId) {
+          const peopleRows = members.slice(0, 50).map((m) => ({
+            company_id: companyId,
+            full_name: m.name,
+            role_title: m.role,
+            source_url: `bolagsverket://${row.org_nr}`,
+          }));
+          const { error: pErr } = await supabase.from("contact_people").insert(peopleRows);
+          if (!pErr) peopleInserted += peopleRows.length;
         }
       } catch (e: any) {
         errors.push(`${row.org_nr}: ${e?.message ?? e}`);
       }
     }
 
-    return json({ inserted, skipped, errors, requested: orgNrs.length, found: source?.length ?? 0 });
+    return json({ inserted, skipped, peopleInserted, errors, requested: orgNrs.length, found: source?.length ?? 0 });
   } catch (e: any) {
     return json({ error: e?.message ?? "Unknown error" }, 500);
   }
