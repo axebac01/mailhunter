@@ -1,1 +1,4 @@
 project_id = "yinahywakjfgqoswqbgm"
+
+[functions.send-to-outreach]
+verify_jwt = false

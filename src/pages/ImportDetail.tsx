@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, FileText, Filter, Search, Briefcase, Plus, Loader2, Square, RotateCw } from "lucide-react";
+import { ArrowLeft, FileText, Filter, Search, Briefcase, Plus, Loader2, Square, RotateCw, Send } from "lucide-react";
 import { toast } from "sonner";
 import { api, type ImportStatus } from "@/lib/api";
 import { exportImportResults } from "@/lib/exporters";
@@ -18,6 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtNum, fmtRelative } from "@/lib/format";
+import { SendToOutreachDialog } from "@/components/outreach/SendToOutreachDialog";
 
 const STATUS_OPTIONS: ImportStatus[] = ["pending", "matched", "partial_match", "not_found", "duplicate", "failed", "processing", "completed"];
 
@@ -42,6 +43,7 @@ export default function ImportDetail() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [outreachOpen, setOutreachOpen] = useState(false);
 
   const allRows = rowsQ.data ?? [];
   const filtered = useMemo(() => {
@@ -206,6 +208,15 @@ export default function ImportDetail() {
               {createJobMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               {imp.crawlJobId ? "Recreate job" : "Create job from matched"} ({matchedRows.length})
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={matchedRows.length === 0}
+              onClick={() => setOutreachOpen(true)}
+              title={matchedRows.length === 0 ? "Inga matchade companies att skicka" : undefined}
+            >
+              <Send className="h-4 w-4" /> Skicka till Outreach ({matchedRows.length})
+            </Button>
             <ExportButton selectedCount={selected.size} onExport={handleExport} />
           </div>
         }
@@ -286,6 +297,13 @@ export default function ImportDetail() {
           </div>
         )}
       </SectionCard>
+
+      <SendToOutreachDialog
+        open={outreachOpen}
+        onOpenChange={setOutreachOpen}
+        ids={matchedRows.map((r) => r.matchedCompanyId!).filter(Boolean)}
+        sourceTable="companies"
+      />
     </div>
   );
 }

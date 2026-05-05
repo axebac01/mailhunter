@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Users } from "lucide-react";
+import { Users, Send } from "lucide-react";
 import { toast } from "sonner";
 import { api, type PersonRow } from "@/lib/api";
 import { exportPeople } from "@/lib/exporters";
@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/app/PageHeader";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ExportButton } from "@/components/app/ExportButton";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtRelative } from "@/lib/format";
@@ -15,9 +16,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useTableFilters } from "@/hooks/useTableFilters";
 import { FilterBar, type FilterChip } from "@/components/app/FilterBar";
 import { PaginationFooter } from "@/components/app/PaginationFooter";
+import { SendToOutreachDialog } from "@/components/outreach/SendToOutreachDialog";
 
 export default function People() {
   const qc = useQueryClient();
+  const [outreachOpen, setOutreachOpen] = useState(false);
   const { data: people = [], isLoading } = useQuery({ queryKey: ["people"], queryFn: () => api.listPeople() });
   const { data: jobs = [] } = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
   const { data: imports = [] } = useQuery({ queryKey: ["imports"], queryFn: () => api.listImports() });
@@ -71,7 +74,14 @@ export default function People() {
       <PageHeader
         title="People"
         description="Public people metadata only — names, roles, and departments. Personal email addresses appear in Contacts, not here."
-        actions={<ExportButton selectedCount={t.selected.size} onExport={handleExport} />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" disabled={t.selected.size === 0} onClick={() => setOutreachOpen(true)}>
+              <Send className="h-4 w-4" /> Skicka till Outreach ({t.selected.size})
+            </Button>
+            <ExportButton selectedCount={t.selected.size} onExport={handleExport} />
+          </div>
+        }
       />
 
       <Card className="mb-4 p-3">
@@ -138,6 +148,13 @@ export default function People() {
           </>
         )}
       </Card>
+
+      <SendToOutreachDialog
+        open={outreachOpen}
+        onOpenChange={setOutreachOpen}
+        ids={Array.from(t.selected)}
+        sourceTable="contact_people"
+      />
     </div>
   );
 }

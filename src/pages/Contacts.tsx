@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Mail } from "lucide-react";
+import { Mail, Send } from "lucide-react";
 import { toast } from "sonner";
 import { api, type ContactRow, type ContactType } from "@/lib/api";
 import { exportContacts } from "@/lib/exporters";
@@ -9,6 +9,7 @@ import { ContactTypeBadge } from "@/components/app/StatusBadge";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ExportButton } from "@/components/app/ExportButton";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtRelative } from "@/lib/format";
@@ -16,11 +17,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useTableFilters } from "@/hooks/useTableFilters";
 import { FilterBar, type FilterChip } from "@/components/app/FilterBar";
 import { PaginationFooter } from "@/components/app/PaginationFooter";
+import { SendToOutreachDialog } from "@/components/outreach/SendToOutreachDialog";
 
 const CONTACT_TYPES: ContactType[] = ["generic_email", "person_email", "phone", "contact_form"];
 
 export default function Contacts() {
   const qc = useQueryClient();
+  const [outreachOpen, setOutreachOpen] = useState(false);
   const { data: contacts = [], isLoading } = useQuery({ queryKey: ["contacts"], queryFn: () => api.listContacts() });
   const { data: jobs = [] } = useQuery({ queryKey: ["jobs"], queryFn: () => api.listJobs() });
   const { data: imports = [] } = useQuery({ queryKey: ["imports"], queryFn: () => api.listImports() });
@@ -67,7 +70,14 @@ export default function Contacts() {
       <PageHeader
         title="Contacts"
         description="Public contact records only — generic emails, personal emails, phone numbers, and contact form URLs."
-        actions={<ExportButton selectedCount={t.selected.size} onExport={handleExport} />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" disabled={t.selected.size === 0} onClick={() => setOutreachOpen(true)}>
+              <Send className="h-4 w-4" /> Skicka till Outreach ({t.selected.size})
+            </Button>
+            <ExportButton selectedCount={t.selected.size} onExport={handleExport} />
+          </div>
+        }
       />
 
       <Card className="mb-4 p-3">
@@ -134,6 +144,13 @@ export default function Contacts() {
           </>
         )}
       </Card>
+
+      <SendToOutreachDialog
+        open={outreachOpen}
+        onOpenChange={setOutreachOpen}
+        ids={Array.from(t.selected)}
+        sourceTable="contacts"
+      />
     </div>
   );
 }
