@@ -23,6 +23,7 @@ const data = [
   { title: "Contacts", url: "/contacts", icon: Mail },
   { title: "People", url: "/people", icon: Users },
   { title: "Companies", url: "/companies", icon: Building2 },
+  { title: "SE Bolagsregister", url: "/se-companies", icon: Database },
 ];
 const sys = [{ title: "Settings", url: "/settings", icon: Settings }];
 
