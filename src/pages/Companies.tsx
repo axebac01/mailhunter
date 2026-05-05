@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, Building2, XCircle } from "lucide-react";
+import { Search, Building2, XCircle, Send } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { downloadRows } from "@/lib/exporters";
@@ -11,11 +11,13 @@ import { ExportButton } from "@/components/app/ExportButton";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtDate, fmtRelative } from "@/lib/format";
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
+import { SendToOutreachDialog } from "@/components/outreach/SendToOutreachDialog";
 
 export default function Companies() {
   const navigate = useNavigate();
