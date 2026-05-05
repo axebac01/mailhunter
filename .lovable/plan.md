@@ -1,97 +1,62 @@
+## Bakgrund
 
-## Vad vi vet nu
+Lovable Cloud exponerar inte en `psql`-anslutningssträng utåt — det finns ingen "Connect"-knapp eftersom backend är abstraherad. Vi byter därför strategi: importen görs via en HTTP-edge-function som redan finns i projektet (`supabase/functions/import-se-companies`), och Codex (på din Mac) postar CSV-rader i batchar dit.
 
-Tre MySQL-dumpar i `~/Downloads/SCB_2.0/Företagsdata/`:
+## Vad jag gör i build-mode
 
-| Fil | Tabell | Rader | Storlek |
-|---|---|---|---|
-| grunduppgifter.sql | grunduppgifter | ~1,2 M | 498 MB |
-| bokslutsuppgifter.sql | bokslutsuppgifter | ~3,96 M (flera år/bolag) | 1,75 GB |
-| styrelse.sql | styrelse | ~2,54 M | 268 MB |
+### 1. Verifiera/uppdatera edge function `import-se-companies`
+- Kontrollera att den accepterar tre olika "kind"-värden: `companies`, `bokslut`, `board`
+- Den tar emot JSON `{ kind, rows: [...] }` med upp till ~1000 rader per request
+- Använder `SUPABASE_SERVICE_ROLE_KEY` för att göra `upsert` mot rätt tabell
+- Returnerar `{ inserted, errors }`
+- Sätt `verify_jwt = false` i `supabase/config.toml` för denna funktion (så Codex kan posta utan auth-token, bara med anon key)
 
-UTF-8 (utf8mb4). Alla kopplas via `OrgNr`. Filerna är för stora för browseruppladdning — vi kör konvertering + import på din maskin via skript jag genererar, sen `\copy` mot Lovable Cloud.
+### 2. Säkerställ tabellschema
+Granska migration `20260505123106_*.sql` så att `se_companies`, `se_bokslut_latest`, `se_board_members` har:
+- Rätt unika constraints för upsert (orgnr, eller orgnr+period för bokslut, orgnr+person för board)
+- Index på `omsattning` och `orgnr`
+- RLS: läsning publik (eller authenticated), skrivning bara via service role
 
-## Kolumnmappning (klar)
+### 3. Skriv ett nytt importskript `scripts/import_via_edge.py`
+Ersätter `import_to_cloud.sh`. Det:
+- Läser de tre CSV-filerna i `/tmp/` (eller path som arg)
+- Postar i batchar om 500 rader till `https://yinahywakjfgqoswqbgm.supabase.co/functions/v1/import-se-companies`
+- Headers: `Authorization: Bearer <ANON_KEY>` + `apikey: <ANON_KEY>` + `Content-Type: application/json`
+- Visar progress (rader/sek, ETA) och retry vid 5xx
+- Skriver slutstatistik
 
-**grunduppgifter → `se_companies`:**
+### 4. Uppdatera `SeCompanies.tsx`-sidan
+- Filter på omsättning (min/max)
+- Visa styrelseledamöter per bolag (join på orgnr)
+- Paginering över ~1,2M rader
 
-| MySQL-kolumn | Postgres-kolumn |
-|---|---|
-| `OrgNr` | `org_nr` (PK) |
-| `Företagsnamn` | `name` |
-| `Postadress` | `street_address` |
-| `Postnummer` | `postal_code` |
-| `Postort` | `postal_city` |
-| `Telefon` | `phone` |
-| `Huvud SNI-kod` | `sni_code` |
-| `Huvud SNI-text` | `sni_text` |
-| `Kommun besöksadress` | `municipality` |
-| `Län besöksadress` | `county` |
-| `Bolagsordning_Korrekt` | `description` |
-| Allt övrigt (Bolagsform, F-skatt, Omsättningsintervall, Moder, Koncernmoder, etc.) | `raw` jsonb |
+### 5. Skapa Codex-prompt
+En färdig prompt du kopierar till Codex på din Mac. Den behöver bara:
+- Sökväg till de tre CSV:erna
+- Anon-key (redan känd, finns i system-prompten)
 
-`website` och `email` finns INTE i dumpen — de hittas senare via crawl-jobben.
+Inget databaslösenord, ingen `psql`, inget pooler-krångel.
 
-**bokslutsuppgifter → uppdaterar `se_companies` (senaste året per OrgNr):**
+## Tekniska detaljer
 
-| MySQL-kolumn | Postgres-kolumn |
-|---|---|
-| `Nettoomsättning` (fallback `OMSETTNING`), delas med 1000 | `revenue_ksek` |
-| `Antal anställda` | `employees` |
-| `Bokslutsperiodens slut` (första 4 tecken) | `fiscal_year` |
+**Endpoint:** `POST https://yinahywakjfgqoswqbgm.supabase.co/functions/v1/import-se-companies`
 
-Vi tar bara raden med högst `Bokslutsperiodens slut` per `OrgNr` (där `Slutkod='B'`).
-
-**styrelse → ny tabell `se_board_members`** (för "kontaktpersoner" senare):
-
-```text
-org_nr text, name text, role text, person_nr text,
-appointed_at date, raw jsonb, id bigserial PK
-+ index på org_nr och name
+**Payload-exempel:**
+```json
+{ "kind": "companies", "rows": [{ "orgnr": "5560000000", "namn": "...", "omsattning": 1234, ... }] }
 ```
 
-## Import-pipeline (engångsjobb)
+**Genomströmning:** 500 rader × ~3 batchar/sek ≈ 1500 rader/sek
+- companies: 1,2M rader → ~13 min
+- bokslut: 688k → ~8 min
+- board: 2,5M → ~28 min
+- **Totalt ~50 min** (mot ~15 min för `\copy`, men utan anslutningstrubbel)
 
-```text
-[din Mac]                                    [Lovable Cloud / Postgres]
-  *.sql (MySQL dump)
-    └─ Python-skript: parsa INSERT-statements
-        └─ skriv 3 CSV-filer:
-            se_companies_base.csv  (från grunduppgifter)
-            se_bokslut_latest.csv  (senaste året per OrgNr)
-            se_board.csv           (från styrelse)
-              └─ psql \copy direkt till databasen
-                  └─ SQL-merge: uppdatera se_companies med bokslutsdata
-```
+**Säkerhet:** Edge function är publik (`verify_jwt = false`) men använder service role internt. För att förhindra missbruk lägger vi till en delad hemlighet: Codex skickar header `x-import-token: <SECRET>` och funktionen verifierar mot en secret `SE_IMPORT_TOKEN`. Jag ber dig sätta den via `add_secret` när vi byter mode.
 
-Skriptet kör i strömmande läge — läser dumpfilerna rad för rad, behöver aldrig ladda hela 1,75 GB i minnet. För bokslutsuppgifter görs en första pass där vi sparar bara senaste året per OrgNr (i en dict på OrgNr → senaste rad).
+## Vad du behöver göra efteråt
 
-Estimerad tid: ~5–10 min konvertering + ~10–20 min `\copy` över wifi.
-
-## Vad jag bygger när du godkänner
-
-**1. Migration: lägg till `se_board_members`-tabell** + index på `se_companies(name)` för bättre namnsökning.
-
-**2. Skript du kör lokalt:**
-- `scripts/convert_dumps.py` — parsar MySQL-dumparna → 3 CSV-filer i `/tmp/`. Beroenden: bara Python 3 standard library.
-- `scripts/import_to_cloud.sh` — kör `psql \copy` mot Lovable Cloud med din connection-string. Inkluderar också MERGE-steget som joinar bokslut → se_companies.
-- `scripts/README.md` — exakt vad du klistrar in i terminalen, steg för steg.
-
-**3. UI-uppdatering:**
-- `Omsättningsintervall`-filter (text-intervall finns på i princip alla bolag, även små som inte lämnar bokslut) som komplement till exakt `revenue_ksek`.
-- Visa antal styrelseledamöter i listan, klickbart till en dialog med namn/funktion.
-- "Importera till Companies" tar med styrelseledamöter som `contact_people` direkt (sparar ett crawl-steg för bolag där styrelsenamn räcker).
-
-**4. Edge function-uppdatering:** `import-se-companies` skapar även `contact_people`-rader från `se_board_members` för valda bolag.
-
-## Vad som krävs av dig
-
-1. Godkänn planen.
-2. Sen får du en connection-string + 3 terminalkommandon att klistra in (`python3 convert_dumps.py`, sen `bash import_to_cloud.sh`). Jag guidar dig.
-3. Vänta ~20 min medan importen kör. Sen ligger 1,2 M svenska bolag sökbara på `/se-companies`.
-
-## Out of scope
-
-- Synk vid ny dump — blir `TRUNCATE` + re-import via samma skript.
-- Historiska bokslut (flera år per bolag) — vi tar bara senaste. Kan läggas till senare i egen tabell `se_bokslut_history` om du vill se trender.
-- Personnummer från styrelse-dumpen importeras till `se_board_members.person_nr` men exponeras INTE i UI (GDPR — visa bara namn + funktion).
+1. Godkänn planen → jag implementerar
+2. Sätt secret `SE_IMPORT_TOKEN` (jag triggar dialogen)
+3. Kopiera Codex-prompten jag genererar och kör den lokalt
+4. När den är klar säger du till — jag verifierar antalet rader via `read_query`

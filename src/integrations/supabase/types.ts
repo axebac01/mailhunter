@@ -715,6 +715,9 @@ export type Database = {
     }
     Functions: {
       clear_all_data: { Args: never; Returns: undefined }
+      ingest_se_board: { Args: { p: Json }; Returns: number }
+      ingest_se_bokslut: { Args: { p: Json }; Returns: number }
+      ingest_se_companies: { Args: { p: Json }; Returns: number }
       show_limit: { Args: never; Returns: number }
       show_trgm: { Args: { "": string }; Returns: string[] }
     }
