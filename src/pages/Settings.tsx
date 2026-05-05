@@ -32,6 +32,8 @@ export default function SettingsPage() {
       <PageHeader title="Settings" description="System defaults and demo data management for mailhunter.ai." />
 
       <div className="space-y-6">
+        <OutreachSettingsCard />
+
         <SectionCard title="Default export settings">
           <div className="flex items-center justify-between">
             <div><Label>Default export format</Label><p className="text-xs text-muted-foreground">Used by quick exports across the app</p></div>
