@@ -59,6 +59,7 @@ const App = () => (
               <Route path="/people" element={<People />} />
               <Route path="/companies" element={<Companies />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />
+              <Route path="/se-companies" element={<SeCompanies />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
