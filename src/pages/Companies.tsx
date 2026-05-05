@@ -102,6 +102,16 @@ export default function Companies() {
             <Table>
               <TableHeader className="sticky top-0 bg-card z-10">
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      checked={filtered.length > 0 && filtered.every((c) => selected.has(c.id))}
+                      onCheckedChange={(v) => {
+                        const next = new Set(selected);
+                        filtered.forEach((c) => (v ? next.add(c.id) : next.delete(c.id)));
+                        setSelected(next);
+                      }}
+                    />
+                  </TableHead>
                   <TableHead>Company</TableHead><TableHead>Website</TableHead><TableHead>Domain</TableHead>
                   <TableHead>Country</TableHead><TableHead>Industry</TableHead>
                   <TableHead>Source</TableHead><TableHead>Created</TableHead>
@@ -112,7 +122,17 @@ export default function Companies() {
               </TableHeader>
               <TableBody>
                 {filtered.map((c) => (
-                  <TableRow key={c.id} className="cursor-pointer" onClick={() => navigate(`/companies/${c.id}`)}>
+                  <TableRow key={c.id} className="cursor-pointer" data-state={selected.has(c.id) ? "selected" : undefined} onClick={() => navigate(`/companies/${c.id}`)}>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={selected.has(c.id)}
+                        onCheckedChange={(v) => {
+                          const next = new Set(selected);
+                          v ? next.add(c.id) : next.delete(c.id);
+                          setSelected(next);
+                        }}
+                      />
+                    </TableCell>
                     <TableCell className="font-medium"><Link to={`/companies/${c.id}`}>{c.name}</Link></TableCell>
                     <TableCell className="text-xs text-primary truncate max-w-[180px]">{c.website ?? "—"}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{c.domain ?? "—"}</TableCell>
