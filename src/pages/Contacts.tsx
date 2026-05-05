@@ -144,6 +144,13 @@ export default function Contacts() {
           </>
         )}
       </Card>
+
+      <SendToOutreachDialog
+        open={outreachOpen}
+        onOpenChange={setOutreachOpen}
+        ids={Array.from(t.selected)}
+        sourceTable="contacts"
+      />
     </div>
   );
 }
