@@ -43,6 +43,7 @@ export default function ImportDetail() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [outreachOpen, setOutreachOpen] = useState(false);
 
   const allRows = rowsQ.data ?? [];
   const filtered = useMemo(() => {
