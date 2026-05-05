@@ -224,16 +224,15 @@ export default function SeCompanies() {
                 ))}
               </TableBody>
             </Table>
-            <div className="border-t">
-              <PaginationFooter
-                page={page + 1}
-                pageCount={Math.max(1, Math.ceil(total / PAGE_SIZE))}
-                onPageChange={(p) => setPage(p - 1)}
-                total={total}
-                pageSize={PAGE_SIZE}
-                loading={isFetching}
-              />
-            </div>
+            <PaginationFooter
+              visibleCount={rows.length}
+              totalCount={total}
+              selectedCount={selected.size}
+              page={page + 1}
+              totalPages={Math.max(1, Math.ceil(total / PAGE_SIZE))}
+              onPrev={() => setPage((p) => Math.max(0, p - 1))}
+              onNext={() => setPage((p) => p + 1)}
+            />
           </>
         )}
       </Card>
