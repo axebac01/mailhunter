@@ -297,6 +297,13 @@ export default function ImportDetail() {
           </div>
         )}
       </SectionCard>
+
+      <SendToOutreachDialog
+        open={outreachOpen}
+        onOpenChange={setOutreachOpen}
+        ids={matchedRows.map((r) => r.matchedCompanyId!).filter(Boolean)}
+        sourceTable="companies"
+      />
     </div>
   );
 }
