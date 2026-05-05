@@ -499,6 +499,69 @@ export type Database = {
           },
         ]
       }
+      outreach_send_log: {
+        Row: {
+          count: number
+          created_at: string
+          errors: number
+          id: string
+          inserted: number
+          response_summary: Json | null
+          skipped: number
+          source_table: string
+          target_id: string | null
+          target_type: string | null
+        }
+        Insert: {
+          count?: number
+          created_at?: string
+          errors?: number
+          id?: string
+          inserted?: number
+          response_summary?: Json | null
+          skipped?: number
+          source_table: string
+          target_id?: string | null
+          target_type?: string | null
+        }
+        Update: {
+          count?: number
+          created_at?: string
+          errors?: number
+          id?: string
+          inserted?: number
+          response_summary?: Json | null
+          skipped?: number
+          source_table?: string
+          target_id?: string | null
+          target_type?: string | null
+        }
+        Relationships: []
+      }
+      outreach_settings: {
+        Row: {
+          default_target_id: string | null
+          default_target_type: string
+          endpoint_url: string | null
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          default_target_id?: string | null
+          default_target_type?: string
+          endpoint_url?: string | null
+          id?: string
+          updated_at?: string
+        }
+        Update: {
+          default_target_id?: string | null
+          default_target_type?: string
+          endpoint_url?: string | null
+          id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       source_pages: {
         Row: {
           company_id: string
