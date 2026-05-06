@@ -718,6 +718,14 @@ export type Database = {
       ingest_se_board: { Args: { p: Json }; Returns: number }
       ingest_se_bokslut: { Args: { p: Json }; Returns: number }
       ingest_se_companies: { Args: { p: Json }; Returns: number }
+      se_sni_options: {
+        Args: never
+        Returns: {
+          company_count: number
+          sni_code: string
+          sni_text: string
+        }[]
+      }
       show_limit: { Args: never; Returns: number }
       show_trgm: { Args: { "": string }; Returns: string[] }
     }
