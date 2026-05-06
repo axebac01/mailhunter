@@ -116,6 +116,13 @@ export default function SeCompanies() {
   };
 
   const fmtNum = (n: number | null) => n?.toLocaleString("sv-SE") ?? "—";
+  const fmtRevenue = (ksek: number | null) => {
+    if (ksek === null || ksek === undefined) return "—";
+    if (Math.abs(ksek) >= 1000) {
+      return `${(ksek / 1000).toLocaleString("sv-SE", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} Mkr`;
+    }
+    return `${ksek.toLocaleString("sv-SE")} tkr`;
+  };
 
   return (
     <div className="p-6 max-w-[1600px] mx-auto">

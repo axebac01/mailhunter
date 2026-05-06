@@ -1,25 +1,20 @@
-## Problem
+## Fix: Visa omsättning korrekt på SE Bolagsregister
 
-Edge-funktionen `ingest-se-data` läser `Deno.env.get("SE_IMPORT_TOKEN")`, men din secret i Lovable Cloud heter `SE_IMPORT_KEY`. Därför returnerar den 500 "SE_IMPORT_TOKEN not configured".
+`revenue_ksek` lagras i tkr men visas som rå siffra, vilket gör belopp ser 1000x mindre ut än de är.
 
-Codex-skriptet (`scripts/import_via_edge.py`) skickar headern `x-import-token` med värdet från env-variabeln `SE_IMPORT_TOKEN` lokalt på din Mac — det är bara namnet *inne i edge-funktionen* som är fel. Värdet som skickas in spelar ingen roll vad det heter lokalt.
+### Ändringar i `src/pages/SeCompanies.tsx`
 
-## Fix
+1. **Smart formatter för omsättning**
+   - `≥ 1 000` tkr → visa som Mkr med 1 decimal (sv-SE), t.ex. `5,0 Mkr`
+   - `< 1 000` tkr → visa som tkr, t.ex. `450 tkr`
+   - `null` → `—`
 
-Ändra en rad i `supabase/functions/ingest-se-data/index.ts`:
+2. **Tabellkolumn**
+   - Header: "Omsättning" (enheten visas i värdet)
+   - Cell använder den nya formattern
 
-```ts
-const expected = Deno.env.get("SE_IMPORT_KEY");
-```
+3. **Filterfält**
+   - Behåll inmatning i tkr (matchar databasen)
+   - Tydligare labels: "Oms. min (tkr)" / "Oms. max (tkr)" med hjälptext: "1 000 tkr = 1 Mkr"
 
-Sen redeployas funktionen automatiskt.
-
-## Vad du gör efteråt
-
-På din Mac, se till att den lokala env-variabeln `SE_IMPORT_TOKEN` (som Codex-skriptet läser) har samma värde som secret `SE_IMPORT_KEY` i Lovable Cloud. Sen kör du om:
-
-```bash
-python3 scripts/import_via_edge.py companies bokslut board
-```
-
-Inga andra ändringar behövs — schema, RPC-funktioner och skriptet är oförändrade.
+Inga DB- eller schemaändringar. Endast presentationsfix.
