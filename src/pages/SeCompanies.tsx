@@ -116,6 +116,13 @@ export default function SeCompanies() {
   };
 
   const fmtNum = (n: number | null) => n?.toLocaleString("sv-SE") ?? "—";
+  const fmtRevenue = (ksek: number | null) => {
+    if (ksek === null || ksek === undefined) return "—";
+    if (Math.abs(ksek) >= 1000) {
+      return `${(ksek / 1000).toLocaleString("sv-SE", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} Mkr`;
+    }
+    return `${ksek.toLocaleString("sv-SE")} tkr`;
+  };
 
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
@@ -154,11 +161,11 @@ export default function SeCompanies() {
           <div className="grid grid-cols-2 gap-2">
             <div>
               <Label>Oms. min (tkr)</Label>
-              <Input className="mt-1.5" type="number" value={revMin} onChange={(e) => setRevMin(e.target.value)} />
+              <Input className="mt-1.5" type="number" placeholder="t.ex. 1000 = 1 Mkr" value={revMin} onChange={(e) => setRevMin(e.target.value)} />
             </div>
             <div>
               <Label>Oms. max (tkr)</Label>
-              <Input className="mt-1.5" type="number" value={revMax} onChange={(e) => setRevMax(e.target.value)} />
+              <Input className="mt-1.5" type="number" placeholder="1 000 tkr = 1 Mkr" value={revMax} onChange={(e) => setRevMax(e.target.value)} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -196,7 +203,7 @@ export default function SeCompanies() {
                   <TableHead>Namn</TableHead>
                   <TableHead>Org.nr</TableHead>
                   <TableHead>SNI</TableHead>
-                  <TableHead className="text-right">Oms (tkr)</TableHead>
+                  <TableHead className="text-right">Omsättning</TableHead>
                   <TableHead className="text-right">Anst.</TableHead>
                   <TableHead>Kommun</TableHead>
                   <TableHead>Webb</TableHead>
@@ -214,7 +221,7 @@ export default function SeCompanies() {
                       {r.sni_code && <span className="font-mono">{r.sni_code}</span>}
                       {r.sni_text && <div className="text-muted-foreground line-clamp-1">{r.sni_text}</div>}
                     </TableCell>
-                    <TableCell className="text-right font-mono text-xs">{fmtNum(r.revenue_ksek)}</TableCell>
+                    <TableCell className="text-right font-mono text-xs">{fmtRevenue(r.revenue_ksek)}</TableCell>
                     <TableCell className="text-right font-mono text-xs">{fmtNum(r.employees)}</TableCell>
                     <TableCell className="text-xs">{r.municipality ?? "—"}</TableCell>
                     <TableCell className="text-xs">
