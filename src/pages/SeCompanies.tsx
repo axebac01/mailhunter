@@ -203,7 +203,7 @@ export default function SeCompanies() {
                   <TableHead>Namn</TableHead>
                   <TableHead>Org.nr</TableHead>
                   <TableHead>SNI</TableHead>
-                  <TableHead className="text-right">Oms (tkr)</TableHead>
+                  <TableHead className="text-right">Omsättning</TableHead>
                   <TableHead className="text-right">Anst.</TableHead>
                   <TableHead>Kommun</TableHead>
                   <TableHead>Webb</TableHead>
