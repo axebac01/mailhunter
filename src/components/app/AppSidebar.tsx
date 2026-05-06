@@ -1,5 +1,6 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Briefcase, PlusSquare, Upload, Mail, Users, Building2, Settings, Target, Database } from "lucide-react";
+import { LayoutDashboard, Briefcase, PlusSquare, Upload, Mail, Users, Building2, Settings, Database } from "lucide-react";
+import logo from "@/assets/logo.svg";
 import {
   Sidebar,
   SidebarContent,
