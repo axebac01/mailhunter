@@ -161,11 +161,11 @@ export default function SeCompanies() {
           <div className="grid grid-cols-2 gap-2">
             <div>
               <Label>Oms. min (tkr)</Label>
-              <Input className="mt-1.5" type="number" value={revMin} onChange={(e) => setRevMin(e.target.value)} />
+              <Input className="mt-1.5" type="number" placeholder="t.ex. 1000 = 1 Mkr" value={revMin} onChange={(e) => setRevMin(e.target.value)} />
             </div>
             <div>
               <Label>Oms. max (tkr)</Label>
-              <Input className="mt-1.5" type="number" value={revMax} onChange={(e) => setRevMax(e.target.value)} />
+              <Input className="mt-1.5" type="number" placeholder="1 000 tkr = 1 Mkr" value={revMax} onChange={(e) => setRevMax(e.target.value)} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2">
