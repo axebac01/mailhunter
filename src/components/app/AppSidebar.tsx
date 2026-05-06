@@ -1,5 +1,6 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Briefcase, PlusSquare, Upload, Mail, Users, Building2, Settings, Target, Database } from "lucide-react";
+import { LayoutDashboard, Briefcase, PlusSquare, Upload, Mail, Users, Building2, Settings, Database } from "lucide-react";
+import logo from "@/assets/logo.svg";
 import {
   Sidebar,
   SidebarContent,
@@ -68,16 +69,8 @@ export function AppSidebar() {
 
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border">
-      <div className="flex items-center gap-2 px-4 h-16 border-b border-sidebar-border">
-        <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-primary to-primary-hover flex items-center justify-center shrink-0">
-          <Target className="h-4 w-4 text-primary-foreground" />
-        </div>
-        {!collapsed && (
-          <div className="flex flex-col">
-            <span className="text-sidebar-foreground font-semibold text-sm leading-tight">mailhunter.ai</span>
-            <span className="text-sidebar-foreground/50 text-[10px] leading-tight">Internal admin</span>
-          </div>
-        )}
+      <div className="flex items-center px-4 h-16 border-b border-sidebar-border">
+        <img src={logo} alt="Geoffrey" className={collapsed ? "h-8 w-8 object-contain object-left" : "h-8 w-auto"} />
       </div>
       <SidebarContent className="bg-sidebar">
         {renderGroup("Workflows", main)}
