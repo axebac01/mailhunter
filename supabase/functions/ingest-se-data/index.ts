@@ -15,8 +15,8 @@ function json(b: unknown, s = 200) {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
-    const expected = Deno.env.get("SE_IMPORT_TOKEN");
-    if (!expected) return json({ error: "SE_IMPORT_TOKEN not configured" }, 500);
+    const expected = Deno.env.get("SE_IMPORT_KEY");
+    if (!expected) return json({ error: "SE_IMPORT_KEY not configured" }, 500);
     const token = req.headers.get("x-import-token");
     if (token !== expected) return json({ error: "Unauthorized" }, 401);
 
