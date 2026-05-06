@@ -221,7 +221,7 @@ export default function SeCompanies() {
                       {r.sni_code && <span className="font-mono">{r.sni_code}</span>}
                       {r.sni_text && <div className="text-muted-foreground line-clamp-1">{r.sni_text}</div>}
                     </TableCell>
-                    <TableCell className="text-right font-mono text-xs">{fmtNum(r.revenue_ksek)}</TableCell>
+                    <TableCell className="text-right font-mono text-xs">{fmtRevenue(r.revenue_ksek)}</TableCell>
                     <TableCell className="text-right font-mono text-xs">{fmtNum(r.employees)}</TableCell>
                     <TableCell className="text-xs">{r.municipality ?? "—"}</TableCell>
                     <TableCell className="text-xs">
