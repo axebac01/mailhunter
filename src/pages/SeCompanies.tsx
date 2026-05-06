@@ -162,8 +162,63 @@ export default function SeCompanies() {
             </div>
           </div>
           <div>
-            <Label>SNI-kod (prefix)</Label>
-            <Input className="mt-1.5" placeholder="t.ex. 47 eller 47.11" value={sniPrefix} onChange={(e) => setSniPrefix(e.target.value)} />
+            <Label>Bransch (SNI)</Label>
+            <Popover open={sniOpen} onOpenChange={setSniOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  role="combobox"
+                  className={cn("mt-1.5 w-full justify-between font-normal", !selectedSni && "text-muted-foreground")}
+                >
+                  <span className="truncate">
+                    {selectedSni
+                      ? `${selectedSni.sni_code} · ${selectedSni.sni_text ?? ""}`
+                      : sniPrefix
+                        ? sniPrefix
+                        : "Välj bransch…"}
+                  </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {sniPrefix && (
+                      <X
+                        className="h-3.5 w-3.5 opacity-60 hover:opacity-100"
+                        onClick={(e) => { e.stopPropagation(); setSniPrefix(""); }}
+                      />
+                    )}
+                    <ChevronsUpDown className="h-4 w-4 opacity-50" />
+                  </div>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="p-0 w-[420px]" align="start">
+                <Command
+                  filter={(value, search) => {
+                    const s = search.toLowerCase();
+                    return value.toLowerCase().includes(s) ? 1 : 0;
+                  }}
+                >
+                  <CommandInput placeholder="Sök kod eller bransch…" />
+                  <CommandList>
+                    <CommandEmpty>Ingen träff.</CommandEmpty>
+                    <CommandGroup>
+                      {(sniOptions ?? []).map((o) => {
+                        const value = `${o.sni_code} ${o.sni_text ?? ""}`;
+                        return (
+                          <CommandItem
+                            key={o.sni_code}
+                            value={value}
+                            onSelect={() => { setSniPrefix(o.sni_code); setSniOpen(false); }}
+                          >
+                            <Check className={cn("mr-2 h-4 w-4", sniPrefix === o.sni_code ? "opacity-100" : "opacity-0")} />
+                            <span className="font-mono text-xs mr-2 text-muted-foreground">{o.sni_code}</span>
+                            <span className="flex-1 truncate">{o.sni_text ?? "—"}</span>
+                            <span className="ml-2 text-xs text-muted-foreground">{o.company_count.toLocaleString("sv-SE")}</span>
+                          </CommandItem>
+                        );
+                      })}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
           </div>
           <div>
             <Label>Län</Label>
