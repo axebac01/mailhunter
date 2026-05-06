@@ -82,6 +82,18 @@ export default function SeCompanies() {
     },
   });
 
+  const { data: sniOptions } = useQuery({
+    queryKey: ["se_sni_options"],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc("se_sni_options");
+      if (error) throw error;
+      return (data ?? []) as { sni_code: string; sni_text: string | null; company_count: number }[];
+    },
+    staleTime: 1000 * 60 * 60,
+  });
+  const [sniOpen, setSniOpen] = useState(false);
+  const selectedSni = sniOptions?.find((o) => o.sni_code === sniPrefix);
+
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.org_nr));
