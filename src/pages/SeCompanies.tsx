@@ -115,6 +115,58 @@ export default function SeCompanies() {
     setSelected(next);
   };
 
+  const buildFilteredQuery = () => {
+    let q = supabase.from("se_companies").select("org_nr");
+    if (filters.search) q = q.ilike("name", `%${filters.search}%`);
+    if (filters.sniPrefix) q = q.like("sni_code", `${filters.sniPrefix}%`);
+    if (filters.county) q = q.ilike("county", filters.county);
+    if (filters.municipality) q = q.ilike("municipality", filters.municipality);
+    if (filters.revMin !== null) q = q.gte("revenue_ksek", filters.revMin);
+    if (filters.revMax !== null) q = q.lte("revenue_ksek", filters.revMax);
+    if (filters.empMin !== null) q = q.gte("employees", filters.empMin);
+    if (filters.empMax !== null) q = q.lte("employees", filters.empMax);
+    return q.order("revenue_ksek", { ascending: false, nullsFirst: false });
+  };
+
+  const fetchOrgNrs = async (limit: number): Promise<string[]> => {
+    const BATCH = 1000;
+    const out: string[] = [];
+    let from = 0;
+    while (out.length < limit) {
+      const to = Math.min(from + BATCH, limit) - 1;
+      const { data, error } = await buildFilteredQuery().range(from, to);
+      if (error) throw error;
+      const chunk = (data ?? []) as { org_nr: string }[];
+      out.push(...chunk.map((r) => r.org_nr));
+      if (chunk.length < to - from + 1) break;
+      from = to + 1;
+    }
+    return out;
+  };
+
+  const selectAllOnPage = () => {
+    const next = new Set(selected);
+    rows.forEach((r) => next.add(r.org_nr));
+    setSelected(next);
+  };
+
+  const selectN = async (n: number) => {
+    const limit = Math.min(n, total);
+    if (limit <= 0) return;
+    setBulkLoading(true);
+    try {
+      const ids = await fetchOrgNrs(limit);
+      const next = new Set(selected);
+      ids.forEach((id) => next.add(id));
+      setSelected(next);
+      toast.success(`Markerade ${ids.length.toLocaleString("sv-SE")} bolag`);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Kunde inte hämta urval");
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
   const importSelected = async () => {
     setImporting(true);
     try {
