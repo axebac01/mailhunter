@@ -43,6 +43,9 @@ export default function SeCompanies() {
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customCount, setCustomCount] = useState("");
 
   // Reset page on filter change
   useEffect(() => { setPage(0); setSelected(new Set()); }, [search, sniPrefix, county, municipality, revMin, revMax, empMin, empMax]);
