@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_se_companies_name_trgm ON public.se_companies USING gin (name gin_trgm_ops);
