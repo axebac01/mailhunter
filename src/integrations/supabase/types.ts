@@ -661,6 +661,24 @@ export type Database = {
         }
         Relationships: []
       }
+      se_sni_codes: {
+        Row: {
+          company_count: number
+          sni_code: string
+          sni_text: string | null
+        }
+        Insert: {
+          company_count?: number
+          sni_code: string
+          sni_text?: string | null
+        }
+        Update: {
+          company_count?: number
+          sni_code?: string
+          sni_text?: string | null
+        }
+        Relationships: []
+      }
       source_pages: {
         Row: {
           company_id: string
@@ -718,6 +736,7 @@ export type Database = {
       ingest_se_board: { Args: { p: Json }; Returns: number }
       ingest_se_bokslut: { Args: { p: Json }; Returns: number }
       ingest_se_companies: { Args: { p: Json }; Returns: number }
+      refresh_se_sni_codes: { Args: never; Returns: undefined }
       se_sni_options: {
         Args: never
         Returns: {
