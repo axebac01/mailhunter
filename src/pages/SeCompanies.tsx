@@ -323,8 +323,64 @@ export default function SeCompanies() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-10">
-                    <Checkbox checked={allSelected} onCheckedChange={toggleAll} />
+                  <TableHead className="w-20">
+                    <div className="flex items-center gap-1">
+                      <Checkbox checked={allSelected} onCheckedChange={toggleAll} />
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" disabled={bulkLoading}>
+                            {bulkLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <ChevronDown className="h-3 w-3" />}
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start">
+                          <DropdownMenuItem onClick={selectAllOnPage}>
+                            Markera denna sida ({rows.length})
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => selectN(total)}>
+                            Markera alla i träffen ({total.toLocaleString("sv-SE")})
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setCustomOpen(true); }}>
+                            Markera ett antal…
+                          </DropdownMenuItem>
+                          {selected.size > 0 && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => setSelected(new Set())}>
+                                Avmarkera alla ({selected.size})
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <Popover open={customOpen} onOpenChange={setCustomOpen}>
+                        <PopoverTrigger asChild><span /></PopoverTrigger>
+                        <PopoverContent align="start" className="w-64">
+                          <Label className="text-xs">Hur många vill du markera?</Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={total}
+                            value={customCount}
+                            placeholder={`max ${total.toLocaleString("sv-SE")}`}
+                            className="mt-2"
+                            onChange={(e) => setCustomCount(e.target.value)}
+                          />
+                          <Button
+                            size="sm"
+                            className="mt-2 w-full"
+                            disabled={!customCount || Number(customCount) <= 0}
+                            onClick={async () => {
+                              const n = Math.min(Number(customCount), total);
+                              setCustomOpen(false);
+                              setCustomCount("");
+                              await selectN(n);
+                            }}
+                          >
+                            Markera
+                          </Button>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
                   </TableHead>
                   <TableHead>Namn</TableHead>
                   <TableHead>Org.nr</TableHead>
