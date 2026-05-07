@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_se_companies_revenue_desc ON public.se_companies (revenue_ksek DESC NULLS LAST);
