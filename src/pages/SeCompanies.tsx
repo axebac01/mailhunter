@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Search, Database, Send, Loader2, Check, ChevronsUpDown, X } from "lucide-react";
+import { Search, Database, Send, Loader2, Check, ChevronsUpDown, X, ChevronDown } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/ui/card";
@@ -42,6 +43,9 @@ export default function SeCompanies() {
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customCount, setCustomCount] = useState("");
 
   // Reset page on filter change
   useEffect(() => { setPage(0); setSelected(new Set()); }, [search, sniPrefix, county, municipality, revMin, revMax, empMin, empMax]);
@@ -109,6 +113,58 @@ export default function SeCompanies() {
     const next = new Set(selected);
     next.has(orgNr) ? next.delete(orgNr) : next.add(orgNr);
     setSelected(next);
+  };
+
+  const buildFilteredQuery = () => {
+    let q = supabase.from("se_companies").select("org_nr");
+    if (filters.search) q = q.ilike("name", `%${filters.search}%`);
+    if (filters.sniPrefix) q = q.like("sni_code", `${filters.sniPrefix}%`);
+    if (filters.county) q = q.ilike("county", filters.county);
+    if (filters.municipality) q = q.ilike("municipality", filters.municipality);
+    if (filters.revMin !== null) q = q.gte("revenue_ksek", filters.revMin);
+    if (filters.revMax !== null) q = q.lte("revenue_ksek", filters.revMax);
+    if (filters.empMin !== null) q = q.gte("employees", filters.empMin);
+    if (filters.empMax !== null) q = q.lte("employees", filters.empMax);
+    return q.order("revenue_ksek", { ascending: false, nullsFirst: false });
+  };
+
+  const fetchOrgNrs = async (limit: number): Promise<string[]> => {
+    const BATCH = 1000;
+    const out: string[] = [];
+    let from = 0;
+    while (out.length < limit) {
+      const to = Math.min(from + BATCH, limit) - 1;
+      const { data, error } = await buildFilteredQuery().range(from, to);
+      if (error) throw error;
+      const chunk = (data ?? []) as { org_nr: string }[];
+      out.push(...chunk.map((r) => r.org_nr));
+      if (chunk.length < to - from + 1) break;
+      from = to + 1;
+    }
+    return out;
+  };
+
+  const selectAllOnPage = () => {
+    const next = new Set(selected);
+    rows.forEach((r) => next.add(r.org_nr));
+    setSelected(next);
+  };
+
+  const selectN = async (n: number) => {
+    const limit = Math.min(n, total);
+    if (limit <= 0) return;
+    setBulkLoading(true);
+    try {
+      const ids = await fetchOrgNrs(limit);
+      const next = new Set(selected);
+      ids.forEach((id) => next.add(id));
+      setSelected(next);
+      toast.success(`Markerade ${ids.length.toLocaleString("sv-SE")} bolag`);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Kunde inte hämta urval");
+    } finally {
+      setBulkLoading(false);
+    }
   };
 
   const importSelected = async () => {
@@ -267,8 +323,64 @@ export default function SeCompanies() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-10">
-                    <Checkbox checked={allSelected} onCheckedChange={toggleAll} />
+                  <TableHead className="w-20">
+                    <div className="flex items-center gap-1">
+                      <Checkbox checked={allSelected} onCheckedChange={toggleAll} />
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" disabled={bulkLoading}>
+                            {bulkLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <ChevronDown className="h-3 w-3" />}
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start">
+                          <DropdownMenuItem onClick={selectAllOnPage}>
+                            Markera denna sida ({rows.length})
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => selectN(total)}>
+                            Markera alla i träffen ({total.toLocaleString("sv-SE")})
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setCustomOpen(true); }}>
+                            Markera ett antal…
+                          </DropdownMenuItem>
+                          {selected.size > 0 && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => setSelected(new Set())}>
+                                Avmarkera alla ({selected.size})
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <Popover open={customOpen} onOpenChange={setCustomOpen}>
+                        <PopoverTrigger asChild><span /></PopoverTrigger>
+                        <PopoverContent align="start" className="w-64">
+                          <Label className="text-xs">Hur många vill du markera?</Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={total}
+                            value={customCount}
+                            placeholder={`max ${total.toLocaleString("sv-SE")}`}
+                            className="mt-2"
+                            onChange={(e) => setCustomCount(e.target.value)}
+                          />
+                          <Button
+                            size="sm"
+                            className="mt-2 w-full"
+                            disabled={!customCount || Number(customCount) <= 0}
+                            onClick={async () => {
+                              const n = Math.min(Number(customCount), total);
+                              setCustomOpen(false);
+                              setCustomCount("");
+                              await selectN(n);
+                            }}
+                          >
+                            Markera
+                          </Button>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
                   </TableHead>
                   <TableHead>Namn</TableHead>
                   <TableHead>Org.nr</TableHead>
