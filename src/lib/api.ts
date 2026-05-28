@@ -61,6 +61,7 @@ export interface JobRow {
   contactsFound: number;
   peopleFound: number;
   pagesCrawled: number;
+  firecrawlCalls: number;
   createdAt: string;
   updatedAt: string;
   lastRunAt: string | null;
