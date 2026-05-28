@@ -390,20 +390,7 @@ async function resolveOne(
   let allRanked = Array.from(merged.values()).sort((a, b) => b.score - a.score);
   let best: Cand | undefined = allRanked[0];
 
-  // 3) Map fallback for borderline top search results
-  if (best && best.source === "search" && best.score >= 3 && best.score <= 4) {
-    const mapped = await mapFirecrawl(best.host, apiKey);
-    for (const u of mapped.slice(0, 10)) {
-      const h = hostFromUrl(u);
-      if (!h || blocklist.has(h)) continue;
-      const score = scoreCandidate(h, nameTokens, country);
-      if (score > (merged.get(h)?.score ?? -1)) {
-        merged.set(h, { host: h, url: u, score, source: "map" });
-      }
-    }
-    allRanked = Array.from(merged.values()).sort((a, b) => b.score - a.score);
-    best = allRanked[0];
-  }
+  // 3) Map fallback removed (too expensive; marginal nytta).
 
   // 4) Verification — accept slug-probed exact-stem auto. Otherwise verify borderline.
   let finalSource = best?.source ?? "search";
@@ -417,8 +404,8 @@ async function resolveOne(
     }
   }
 
-  // 5) LLM tiebreaker — top two within 1 point, leader < 5
-  if (best && best.score < 5 && allRanked.length >= 2 && (allRanked[0].score - allRanked[1].score) <= 1) {
+  // 5) LLM tiebreaker — only when leader is very weak (score < 3); else trust the score.
+  if (best && best.score < 3 && allRanked.length >= 2 && (allRanked[0].score - allRanked[1].score) <= 1) {
     const pick = await llmTiebreaker(name, country, allRanked.slice(0, 5));
     if (pick) {
       const found = allRanked.find((c) => c.host === pick);
