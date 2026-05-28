@@ -272,6 +272,50 @@ async function resolveOne(
     await supabase.from("companies").update({ country: jobCountry }).eq("id", id);
   }
 
+  // ──── SE shortcut: if company was imported from se_companies and has a website, skip Firecrawl entirely ────
+  // We stamp `notes` with "org.nr: NNN" on SE-import. Use that to look up the website directly.
+  const { data: companyRow } = await supabase.from("companies").select("notes, website").eq("id", id).maybeSingle();
+  const notes: string = (companyRow as any)?.notes ?? "";
+  const existingWebsite: string | null = (companyRow as any)?.website ?? null;
+  const orgNrMatch = notes.match(/org\.nr:\s*(\d{6}-?\d{4})/i);
+  const tryWebsite = async (raw: string): Promise<string | null> => {
+    try {
+      const u = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
+      const host = u.hostname.replace(/^www\./, "").toLowerCase();
+      if (!host || BLOCKED_HOSTS.has(host)) return null;
+      return host;
+    } catch { return null; }
+  };
+  // Existing website on companies row
+  if (existingWebsite) {
+    const host = await tryWebsite(existingWebsite);
+    if (host) {
+      await supabase.from("companies").update({ domain: host, domain_status: "resolved", source_url: `https://${host}` }).eq("id", id);
+      if (jobId) await supabase.from("crawl_logs").insert({
+        crawl_job_id: jobId, level: "success",
+        message: `Resolved "${name}" → ${host} (cached website, 0 credits)`,
+        meta_json: { companyId: id, source: "cached_website", credits: 0 },
+      });
+      return { id, status: "resolved", domain: host, source: "cached_website" };
+    }
+  }
+  // SE org-nr fallback
+  if (orgNrMatch) {
+    const { data: seRow } = await supabase.from("se_companies").select("website").eq("org_nr", orgNrMatch[1]).maybeSingle();
+    if ((seRow as any)?.website) {
+      const host = await tryWebsite((seRow as any).website);
+      if (host) {
+        await supabase.from("companies").update({ domain: host, domain_status: "resolved", source_url: `https://${host}`, website: `https://${host}` }).eq("id", id);
+        if (jobId) await supabase.from("crawl_logs").insert({
+          crawl_job_id: jobId, level: "success",
+          message: `Resolved "${name}" → ${host} (SE-register, 0 credits)`,
+          meta_json: { companyId: id, source: "se_register", credits: 0, org_nr: orgNrMatch[1] },
+        });
+        return { id, status: "resolved", domain: host, source: "se_register" };
+      }
+    }
+  }
+
   // Per-company blocklist
   const { data: bl } = await supabase.from("domain_blocklist").select("host").eq("company_id", id);
   const blocklist = new Set<string>([...(blocklistGlobal ?? []), ...((bl ?? []).map((r: any) => r.host))]);
