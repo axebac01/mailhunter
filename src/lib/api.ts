@@ -198,6 +198,7 @@ const mapJob = (r: DB["crawl_jobs"]["Row"]): JobRow => ({
   contactsFound: r.contacts_found,
   peopleFound: r.people_found,
   pagesCrawled: r.pages_crawled,
+  firecrawlCalls: (r as any).firecrawl_calls ?? 0,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
   lastRunAt: r.last_run_at,
