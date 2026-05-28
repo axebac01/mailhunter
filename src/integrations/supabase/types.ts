@@ -70,6 +70,7 @@ export type Database = {
           id: string
           import_id: string | null
           import_row_id: string | null
+          is_decision_maker: boolean
           role_title: string | null
           source_url: string
         }
@@ -83,6 +84,7 @@ export type Database = {
           id?: string
           import_id?: string | null
           import_row_id?: string | null
+          is_decision_maker?: boolean
           role_title?: string | null
           source_url: string
         }
@@ -96,6 +98,7 @@ export type Database = {
           id?: string
           import_id?: string | null
           import_row_id?: string | null
+          is_decision_maker?: boolean
           role_title?: string | null
           source_url?: string
         }
@@ -211,6 +214,7 @@ export type Database = {
           country: string | null
           created_at: string
           deduplicate: boolean
+          firecrawl_calls: number
           id: string
           include_contact_forms: boolean
           include_contact_person_names: boolean
@@ -241,6 +245,7 @@ export type Database = {
           country?: string | null
           created_at?: string
           deduplicate?: boolean
+          firecrawl_calls?: number
           id?: string
           include_contact_forms?: boolean
           include_contact_person_names?: boolean
@@ -271,6 +276,7 @@ export type Database = {
           country?: string | null
           created_at?: string
           deduplicate?: boolean
+          firecrawl_calls?: number
           id?: string
           include_contact_forms?: boolean
           include_contact_person_names?: boolean

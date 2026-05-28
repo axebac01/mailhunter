@@ -1,7 +1,11 @@
-// World-class person-email extraction for a single company.
-// Pipeline: discover (map + canonical guesses + sub-team hop) → scrape in parallel
-// → normalize/de-obfuscate → regex + JSON-mode person extraction → classify →
-// optional pattern-based synthesis → MX provider lookup → DB inserts.
+// Tiered, credit-frugal email + decision-maker extraction for a single company.
+// Goals: minimize Firecrawl spend, maximize % of companies where we reach SOMEONE.
+// Pipeline:
+//   0. Domain-cache: if another company with same root domain already has contacts → copy & exit (0 credits)
+//   1. Tier 1: HEAD-probe canonical contact paths → scrape FIRST one that exists (1 credit). Regex emails/phones/forms.
+//   2. Tier 2 (skip if Tier 1 found a generic@ or person mail): HEAD-probe leadership/team paths → scrape first hit with JSON-extract for people (≈5 credits, max 1 LLM/company). Rank decision-makers first.
+//   3. Tier 3 (only if 0 emails AND 0 people): map(limit 30) + scrape homepage (≈2 credits).
+// Hard cap: 5 Firecrawl calls + 1 LLM-extract per company. Count tracked on crawl_jobs.firecrawl_calls.
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 
@@ -19,16 +23,12 @@ const GENERIC_PREFIXES = new Set([
   "welcome","feedback","orders","order","shop","store","customerservice","customer-service",
 ]);
 
-// Top first names (Nordic + EN) to validate single-word locals like `anna@`.
 const FIRST_NAMES = new Set([
-  // Swedish
   "anna","maria","lena","karin","eva","sara","emma","linda","jenny","malin","sofia","johanna","kristin","camilla","julia","elin","ida","hanna","matilda","ebba","alice","alma","wilma","stella","ella","lisa","kim","therese","frida","klara","cecilia","annika","helena","marie","ann","monica","ulla","ingrid","gunilla","kerstin","birgitta","margareta","elisabeth",
-  "erik","lars","karl","carl","anders","johan","mikael","mattias","andreas","per","peter","jonas","fredrik","henrik","gustav","oskar","oscar","alexander","viktor","filip","emil","lukas","hugo","nils","axel","liam","noah","william","leo","theo","elias","arvid","sebastian","daniel","magnus","björn","bjorn","tomas","thomas","martin","ola","stefan","bo","sven","hans","gunnar","rolf","per-olof","jan",
-  // Norwegian/Danish/Finnish
-  "ola","kari","ingrid","liv","mette","helle","aino","kaisa","mikko","jukka","jari","matti","timo","janne","ville","antti","tuomas",
-  // English
-  "james","john","robert","michael","william","david","richard","joseph","thomas","charles","christopher","daniel","matthew","anthony","mark","donald","steven","paul","andrew","joshua","kenneth","kevin","brian","george","edward","ronald","timothy","jason","jeffrey","ryan","jacob","gary","nicholas","eric","jonathan","stephen","larry","justin","scott","brandon","frank","benjamin","gregory","samuel","raymond","patrick","alexander","jack","dennis","jerry","tyler","aaron","henry","douglas","jose","peter","adam","nathan","zachary","walter","kyle","harold","carl","arthur","gerald","roger","keith","jeremy","lawrence","sean","christian","ethan","austin","joe",
-  "mary","patricia","jennifer","linda","elizabeth","barbara","susan","jessica","sarah","karen","nancy","lisa","betty","helen","sandra","donna","carol","ruth","sharon","michelle","laura","sarah","kimberly","deborah","dorothy","amy","angela","ashley","brenda","emma","olivia","cynthia","marie","janet","catherine","frances","christine","samantha","debra","rachel","carolyn","janet","virginia","maria","heather","diane","julie","joyce","victoria","kelly","christina","joan","evelyn","lauren","judith","megan","cheryl","andrea","hannah","jacqueline","martha","gloria","teresa","ann","sara","madison","grace","julia","theresa","rose","janice","nicole","kathryn","jean","abigail","alice","julia","judy","sophia","beverly","denise","marilyn","amber","danielle","brittany","diana","natalie","sara",
+  "erik","lars","karl","carl","anders","johan","mikael","mattias","andreas","per","peter","jonas","fredrik","henrik","gustav","oskar","oscar","alexander","viktor","filip","emil","lukas","hugo","nils","axel","liam","noah","william","leo","theo","elias","arvid","sebastian","daniel","magnus","björn","bjorn","tomas","thomas","martin","ola","stefan","bo","sven","hans","gunnar","rolf","jan",
+  "kari","liv","mette","helle","aino","kaisa","mikko","jukka","jari","matti","timo","janne","ville","antti","tuomas",
+  "james","john","robert","michael","david","richard","joseph","charles","christopher","matthew","anthony","mark","donald","steven","paul","andrew","joshua","kenneth","kevin","brian","george","edward","ronald","timothy","jason","jeffrey","ryan","jacob","gary","nicholas","eric","jonathan","stephen","scott","brandon","frank","benjamin","gregory","samuel","raymond","patrick","jack","dennis","jerry","tyler","aaron","henry","douglas","jose","adam","nathan","zachary","walter","kyle","harold","arthur","gerald","roger","keith","jeremy","lawrence","sean","christian","ethan","austin","joe",
+  "mary","patricia","jennifer","elizabeth","barbara","susan","jessica","karen","nancy","betty","helen","sandra","donna","carol","ruth","sharon","michelle","laura","kimberly","deborah","dorothy","amy","angela","ashley","brenda","olivia","cynthia","janet","catherine","frances","christine","samantha","debra","rachel","carolyn","virginia","heather","diane","joyce","victoria","kelly","christina","joan","evelyn","lauren","judith","megan","cheryl","andrea","hannah","jacqueline","martha","gloria","teresa","madison","grace","theresa","rose","janice","nicole","kathryn","jean","abigail","julia","judy","sophia","beverly","denise","marilyn","amber","danielle","brittany","diana","natalie",
 ]);
 
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
@@ -42,13 +42,18 @@ function classifyEmail(email: string): EmailClass {
   if (GENERIC_PREFIXES.has(base)) return "generic";
   const head = base.split(/[._-]/)[0];
   if (GENERIC_PREFIXES.has(head)) return "generic";
-  // firstname.lastname / f.lastname → high confidence person
   if (/^[a-z]+[._-][a-z]{2,}$/.test(base)) return "person_high";
-  // single token: only person if it's a known first name
   if (/^[a-z]{2,}$/.test(base) && FIRST_NAMES.has(base)) return "person_high";
-  // numbers in local → likely not a public business person email
   if (/\d/.test(base)) return "generic";
   return "person_low";
+}
+
+// Beslutsfattare-detektor (SV + EN)
+const DECISION_MAKER_RE = /\b(vd|verkst[äa]llande\s+direkt[öo]r|ceo|c\.e\.o|grundare|founder|co[-\s]?founder|[äa]gare|owner|partner|styrelseordf[öo]rande|chairman|chairwoman|managing\s+director|\bmd\b|general\s+manager|head\s+of|chief\s+\w+\s+officer|cfo|coo|cto|cmo|cro|cio|president)\b/i;
+
+function isDecisionMaker(role?: string | null): boolean {
+  if (!role) return false;
+  return DECISION_MAKER_RE.test(role);
 }
 
 const PHONE_INTL_RE = /\+\d[\d\s().-]{6,}\d/g;
@@ -62,19 +67,11 @@ function stripNoise(html: string): string {
     .replace(/<svg[\s\S]*?<\/svg>/gi, " ");
 }
 
-// ─────────────────────────── de-obfuscation ──────────────────────────────────
-
 function decodeHtmlEntities(s: string): string {
   return s
-    .replace(/&#(\d+);/g, (_, n) => {
-      try { return String.fromCharCode(parseInt(n, 10)); } catch { return _; }
-    })
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => {
-      try { return String.fromCharCode(parseInt(n, 16)); } catch { return _; }
-    })
-    .replace(/&commat;/gi, "@")
-    .replace(/&period;/gi, ".")
-    .replace(/&amp;/gi, "&");
+    .replace(/&#(\d+);/g, (_, n) => { try { return String.fromCharCode(parseInt(n, 10)); } catch { return _; } })
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => { try { return String.fromCharCode(parseInt(n, 16)); } catch { return _; } })
+    .replace(/&commat;/gi, "@").replace(/&period;/gi, ".").replace(/&amp;/gi, "&");
 }
 
 function deobfuscate(s: string): string {
@@ -88,7 +85,6 @@ function deobfuscate(s: string): string {
   return t;
 }
 
-// Decode Cloudflare email-protection: hex string where byte 0 is the XOR key.
 function decodeCfEmail(hex: string): string | null {
   try {
     const bytes: number[] = [];
@@ -136,13 +132,16 @@ function emailHost(email: string): string {
   return email.split("@")[1]?.toLowerCase() ?? "";
 }
 
-// ─────────────────────────── Firecrawl wrappers ──────────────────────────────
+// ─────────────────────────── Firecrawl wrappers (counted) ────────────────────
 
-async function firecrawlMap(domain: string, apiKey: string): Promise<string[]> {
+type Counter = { calls: number; llmCalls: number };
+
+async function firecrawlMap(domain: string, apiKey: string, counter: Counter): Promise<string[]> {
+  counter.calls++;
   const res = await fetch(`${FIRECRAWL_V2}/map`, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ url: `https://${domain}`, limit: 200 }),
+    body: JSON.stringify({ url: `https://${domain}`, limit: 30 }),
   });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) return [];
@@ -150,7 +149,9 @@ async function firecrawlMap(domain: string, apiKey: string): Promise<string[]> {
   return links;
 }
 
-async function firecrawlScrape(url: string, apiKey: string, opts?: { wait?: boolean; jsonPrompt?: string }): Promise<{ markdown?: string; html?: string; json?: any }> {
+async function firecrawlScrape(url: string, apiKey: string, counter: Counter, opts?: { wait?: boolean; jsonPrompt?: string }): Promise<{ markdown?: string; html?: string; json?: any }> {
+  counter.calls++;
+  if (opts?.jsonPrompt) counter.llmCalls++;
   const formats: any[] = ["markdown", "html"];
   if (opts?.jsonPrompt) formats.push({ type: "json", prompt: opts.jsonPrompt });
   const body: any = { url, formats, onlyMainContent: false };
@@ -175,79 +176,112 @@ async function headOk(url: string): Promise<boolean> {
     const t = setTimeout(() => ctrl.abort(), 4000);
     const res = await fetch(url, { method: "HEAD", redirect: "follow", signal: ctrl.signal });
     clearTimeout(t);
-    return res.ok || res.status === 405; // some sites disallow HEAD but the page exists
+    return res.ok || res.status === 405;
   } catch { return false; }
 }
 
-// ─────────────────────────── page discovery ──────────────────────────────────
+async function firstReachable(urls: string[]): Promise<string | null> {
+  const probes = await Promise.all(urls.map(async (u) => ({ u, ok: await headOk(u) })));
+  for (const { u, ok } of probes) if (ok) return u;
+  return null;
+}
 
-const TEAM_KEYWORDS = ["contact","kontakt","kontakta","about","om-oss","over-ons","impressum","imprint","team","people","staff","medarbetare","personal","ledning","management","board","styrelse","advisors","leadership","press","media","legal"];
-const CANONICAL_PATHS = ["/", "/contact", "/kontakt", "/kontakta", "/about", "/about-us", "/om-oss", "/team", "/medarbetare", "/people", "/staff", "/impressum"];
+// ─────────────────────────── canonical path lists ────────────────────────────
+
+// Ordered by hit-rate (Swedish SMB first)
+const CONTACT_PATHS = ["/kontakt", "/kontakta-oss", "/contact", "/contact-us", "/kontakt-oss"];
+const LEADERSHIP_PATHS = ["/ledning", "/om-oss/ledning", "/om-oss", "/about/team", "/team", "/medarbetare", "/personal", "/about-us", "/about", "/people", "/styrelse"];
 
 function classifyPage(url: string): "homepage"|"contact"|"about"|"team"|"people"|"other" {
   const p = url.toLowerCase();
   if (/\/(team|medarbetare|staff|people|personal|ledning|leadership|board|styrelse)\b/.test(p)) return "team";
   if (/\/(contact|kontakt|kontakta|impressum|imprint)\b/.test(p)) return "contact";
   if (/\/(about|om-oss|over-ons)\b/.test(p)) return "about";
-  if (new URL(p, "https://x").pathname === "/") return "homepage";
+  try { if (new URL(p, "https://x").pathname === "/") return "homepage"; } catch { /* ignore */ }
   return "other";
 }
 
-async function discoverPages(domain: string, apiKey: string): Promise<string[]> {
-  const root = rootDomain(domain);
-  const links = await firecrawlMap(domain, apiKey);
-  const inDomain = links.filter((l) => {
-    try { return rootDomain(new URL(l).hostname) === root; } catch { return false; }
-  });
-  const matched = inDomain.filter((l) => {
-    const p = l.toLowerCase();
-    return TEAM_KEYWORDS.some((w) => p.includes(`/${w}`));
-  });
-  const set = new Set<string>([`https://${domain}`, ...matched.slice(0, 10)]);
+// ─────────────────────────── extraction from page ────────────────────────────
 
-  // Probe canonical guesses not already present.
-  const guesses = CANONICAL_PATHS.map((p) => `https://${domain}${p}`).filter((u) => !set.has(u));
-  const probes = await Promise.all(guesses.map(async (u) => ({ u, ok: await headOk(u) })));
-  for (const { u, ok } of probes) if (ok) set.add(u);
+type PageExtract = {
+  emails: Set<string>;
+  phones: Set<string>;
+  forms: Set<string>;
+  people: { full_name: string; role_title?: string; department?: string; email?: string; source_url: string }[];
+  emailSources: Map<string, string>;
+};
 
-  return Array.from(set).slice(0, 12);
-}
+function extractFromPage(page: { url: string; markdown?: string; html?: string; json?: any }, root: string): PageExtract {
+  const out: PageExtract = {
+    emails: new Set(), phones: new Set(), forms: new Set(), people: [], emailSources: new Map(),
+  };
+  const rawHtml = page.html ?? "";
+  const cleanHtml = stripNoise(rawHtml);
+  const blob = deobfuscate(`${page.markdown ?? ""}\n${cleanHtml}`);
 
-function extractInDomainLinks(html: string, domain: string): string[] {
-  const root = rootDomain(domain);
-  const out: string[] = [];
-  for (const m of html.matchAll(/href\s*=\s*["']([^"']+)["']/gi)) {
-    let raw = m[1];
-    if (raw.startsWith("/")) raw = `https://${domain}${raw}`;
-    if (!/^https?:\/\//i.test(raw)) continue;
-    try {
-      const u = new URL(raw);
-      if (rootDomain(u.hostname) !== root) continue;
-      out.push(u.toString().split("#")[0]);
-    } catch { /* skip */ }
+  const found = new Set<string>();
+  for (const m of blob.match(EMAIL_RE) ?? []) found.add(m.toLowerCase());
+  for (const e of extractMailtos(rawHtml)) found.add(e.toLowerCase());
+  for (const e of extractCfEmails(rawHtml)) found.add(e.toLowerCase());
+
+  for (const e of found) {
+    const host = emailHost(e);
+    if (!host) continue;
+    if (JUNK_DOMAINS.some((j) => host === j || host.endsWith("." + j))) continue;
+    if (rootDomain(host) !== root) continue;
+    if (e.includes("..") || e.length > 80) continue;
+    out.emails.add(e);
+    if (!out.emailSources.has(e)) out.emailSources.set(e, page.url);
+  }
+
+  for (const m of blob.matchAll(PHONE_INTL_RE)) {
+    const cleaned = m[0].replace(/[^\d+]/g, "");
+    const digits = cleaned.replace(/\D/g, "");
+    if (digits.length >= 8 && digits.length <= 15) out.phones.add(m[0].trim());
+  }
+  for (const m of rawHtml.matchAll(TEL_HREF_RE)) {
+    const cleaned = m[1].replace(/[^\d+]/g, "");
+    const digits = cleaned.replace(/\D/g, "");
+    if (digits.length >= 8 && digits.length <= 15) out.phones.add(m[1].trim());
+  }
+
+  if (/\/(contact|kontakt|kontakta)/i.test(page.url) && /<form[\s>]/i.test(rawHtml)) {
+    out.forms.add(page.url);
+  }
+
+  const ppl: any[] = Array.isArray(page.json?.people) ? page.json.people : [];
+  for (const p of ppl) {
+    const name = String(p?.full_name ?? "").trim();
+    if (!name || name.length > 100 || !/\s/.test(name)) continue;
+    out.people.push({
+      full_name: name,
+      role_title: p?.role_title ? String(p.role_title).slice(0, 120) : undefined,
+      department: p?.department ? String(p.department).slice(0, 80) : undefined,
+      email: p?.email && String(p.email).includes("@") ? String(p.email).toLowerCase() : undefined,
+      source_url: page.url,
+    });
   }
   return out;
 }
 
-// ─────────────────────────── MX provider ─────────────────────────────────────
+function mergeExtract(a: PageExtract, b: PageExtract): PageExtract {
+  for (const e of b.emails) a.emails.add(e);
+  for (const [e, src] of b.emailSources) if (!a.emailSources.has(e)) a.emailSources.set(e, src);
+  for (const p of b.phones) a.phones.add(p);
+  for (const f of b.forms) a.forms.add(f);
+  a.people.push(...b.people);
+  return a;
+}
 
-async function detectMxProvider(domain: string): Promise<string> {
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 4000);
-    const r = await fetch(`https://cloudflare-dns.com/dns-query?name=${domain}&type=MX`, {
-      headers: { accept: "application/dns-json" }, signal: ctrl.signal,
-    });
-    clearTimeout(t);
-    const j = await r.json().catch(() => ({}));
-    const answers: any[] = j?.Answer ?? [];
-    const blob = answers.map((a) => String(a.data ?? "")).join(" ").toLowerCase();
-    if (blob.includes("google") || blob.includes("googlemail")) return "google";
-    if (blob.includes("outlook") || blob.includes("protection.outlook") || blob.includes("microsoft")) return "microsoft";
-    if (blob.includes("zoho")) return "zoho";
-    if (blob.includes("proton")) return "proton";
-    return answers.length ? "other" : "none";
-  } catch { return "unknown"; }
+// Sort decision-makers first
+function rankPeople(people: PageExtract["people"]): PageExtract["people"] {
+  return [...people].sort((a, b) => {
+    const ad = isDecisionMaker(a.role_title) ? 1 : 0;
+    const bd = isDecisionMaker(b.role_title) ? 1 : 0;
+    if (ad !== bd) return bd - ad;
+    // tie-break: with email first
+    return (b.email ? 1 : 0) - (a.email ? 1 : 0);
+  });
 }
 
 // ─────────────────────────── handler ─────────────────────────────────────────
@@ -276,153 +310,147 @@ Deno.serve(async (req) => {
       personNames: options?.personNames ?? true,
     };
 
+    const counter: Counter = { calls: 0, llmCalls: 0 };
     const log = (level: string, message: string, meta?: any) => {
       if (jobId) supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level, message, meta_json: meta ?? null }).then(() => {});
     };
 
-    // Look up company name once for richer timeline events
     const { data: companyRow } = await supabase.from("companies").select("name").eq("id", companyId).maybeSingle();
     const companyName = companyRow?.name ?? domain;
-
     const root = rootDomain(domain);
 
-    // 1) Discover pages
-    let pages = await discoverPages(domain, apiKey);
-    log("info", `Discovered ${pages.length} pages on ${domain}`, {
-      event: "pages_discovered",
-      company: companyName,
-      company_id: companyId,
-      host: domain,
-      count: pages.length,
-      urls: pages.slice(0, 10),
-    });
-
-    // 2) Scrape initial pages in parallel
-    const teamPagePrompt = "Extract all named individuals (employees, founders, staff, board members) with their role and email if visible. Return JSON: { people: [{ full_name, role_title, department, email }] }. Only include real people, not testimonials.";
-
-    const initialResults = await Promise.all(pages.map(async (url) => {
-      const isTeam = ["team","contact","about"].includes(classifyPage(url));
-      const r = await firecrawlScrape(url, apiKey, isTeam ? { jsonPrompt: teamPagePrompt } : undefined);
-      return { url, ...r };
-    }));
-
-    // 3) Sub-team hop: from any team page, follow up to 8 internal profile-looking links
-    const subLinks = new Set<string>();
-    for (const r of initialResults) {
-      if (classifyPage(r.url) !== "team" || !r.html) continue;
-      for (const l of extractInDomainLinks(r.html, domain)) {
-        if (subLinks.size >= 8) break;
-        if (pages.includes(l)) continue;
-        if (/\/(team|people|medarbetare|staff)\//i.test(l) || /\/[a-z]+-[a-z]+(-[a-z]+)?\/?$/i.test(l)) {
-          subLinks.add(l);
+    // ──── Tier 0: domain cache ────
+    // If another company has same domain and we already scraped contacts/people, copy & exit (0 credits).
+    const { data: siblings } = await supabase
+      .from("companies")
+      .select("id")
+      .eq("domain", domain)
+      .neq("id", companyId)
+      .limit(20);
+    const siblingIds = (siblings ?? []).map((s: any) => s.id);
+    if (siblingIds.length) {
+      const { data: cachedContacts } = await supabase
+        .from("contacts")
+        .select("value, contact_type, source_url")
+        .in("company_id", siblingIds)
+        .limit(50);
+      const uniq = new Map<string, any>();
+      for (const c of cachedContacts ?? []) {
+        const key = `${c.contact_type}:${c.value}`;
+        if (!uniq.has(key)) uniq.set(key, c);
+      }
+      if (uniq.size > 0) {
+        // Only copy generic emails, phones, forms — not person-specific (different employees per legal entity)
+        const safeTypes = new Set(["generic_email", "phone", "contact_form"]);
+        let copied = 0;
+        for (const c of uniq.values()) {
+          if (!safeTypes.has(c.contact_type)) continue;
+          // Respect option toggles
+          if (c.contact_type === "generic_email" && !opt.genericEmails) continue;
+          if (c.contact_type === "phone" && !opt.phones) continue;
+          if (c.contact_type === "contact_form" && !opt.contactForms) continue;
+          const { error } = await supabase.from("contacts").insert({
+            company_id: companyId, crawl_job_id: jobId ?? null,
+            contact_type: c.contact_type, value: c.value, source_url: c.source_url,
+          });
+          if (!error) copied++;
+        }
+        if (copied > 0) {
+          log("success", `Cache-hit on ${domain} — copied ${copied} contacts from sibling (0 credits)`, {
+            event: "cache_hit", company: companyName, company_id: companyId, host: domain, copied,
+          });
+          return new Response(JSON.stringify({
+            domain, pages: 0, emails_found: 0, person_emails: 0, people_extracted: 0,
+            synthesized: 0, cached: true, copied, firecrawl_calls: 0,
+          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
     }
-    const subResults = await Promise.all(Array.from(subLinks).slice(0, 8).map(async (url) => {
-      const r = await firecrawlScrape(url, apiKey, { jsonPrompt: teamPagePrompt });
-      return { url, ...r };
-    }));
 
-    const allResults = [...initialResults, ...subResults];
-    pages = allResults.map((r) => r.url);
+    // ──── Setup accumulators ────
+    const acc: PageExtract = { emails: new Set(), phones: new Set(), forms: new Set(), people: [], emailSources: new Map() };
+    const scrapedUrls: string[] = [];
 
-    // 4) Process each page: dedup, normalize, regex, mailto, cfemail; collect people
-    const foundEmails = new Set<string>();
-    const foundPhones = new Set<string>();
-    const foundForms = new Set<string>();
-    const emailSources = new Map<string, string>();
-    const peopleAcc: { full_name: string; role_title?: string; department?: string; email?: string; source_url: string }[] = [];
-
-    for (const r of allResults) {
-      const rawHtml = r.html ?? "";
-      const cleanHtml = stripNoise(rawHtml);
-      const blob = deobfuscate(`${r.markdown ?? ""}\n${cleanHtml}`);
-
-      const emails = new Set<string>();
-      for (const m of blob.match(EMAIL_RE) ?? []) emails.add(m.toLowerCase());
-      for (const e of extractMailtos(rawHtml)) emails.add(e.toLowerCase());
-      for (const e of extractCfEmails(rawHtml)) emails.add(e.toLowerCase());
-
-      // JS-rendered fallback if page mentions email but yielded nothing
-      if (emails.size === 0 && /(email|e-?post|kontakt|contact)/i.test(blob)) {
-        const r2 = await firecrawlScrape(r.url, apiKey, { wait: true });
-        const blob2 = deobfuscate(`${r2.markdown ?? ""}\n${stripNoise(r2.html ?? "")}`);
-        for (const m of blob2.match(EMAIL_RE) ?? []) emails.add(m.toLowerCase());
-        for (const e of extractMailtos(r2.html ?? "")) emails.add(e.toLowerCase());
-      }
-
-      for (const e of emails) {
-        const host = emailHost(e);
-        if (!host) continue;
-        if (JUNK_DOMAINS.some((j) => host === j || host.endsWith("." + j))) continue;
-        if (rootDomain(host) !== root) continue;
-        if (e.includes("..") || e.length > 80) continue;
-        foundEmails.add(e);
-        if (!emailSources.has(e)) emailSources.set(e, r.url);
-      }
-
-      // Phones
-      const phoneCandidates: string[] = [];
-      for (const m of blob.matchAll(PHONE_INTL_RE)) phoneCandidates.push(m[0]);
-      for (const m of rawHtml.matchAll(TEL_HREF_RE)) phoneCandidates.push(m[1]);
-      for (const raw of phoneCandidates) {
-        const cleaned = raw.replace(/[^\d+]/g, "");
-        const digits = cleaned.replace(/\D/g, "");
-        if (digits.length >= 8 && digits.length <= 15) foundPhones.add(raw.trim());
-      }
-
-      if (/\/(contact|kontakt|kontakta)/i.test(r.url) && /<form[\s>]/i.test(rawHtml)) {
-        foundForms.add(r.url);
-      }
-
-      // People from JSON-mode extraction
-      const ppl: any[] = Array.isArray(r.json?.people) ? r.json.people : [];
-      for (const p of ppl) {
-        const name = String(p?.full_name ?? "").trim();
-        if (!name || name.length > 100 || !/\s/.test(name)) continue;
-        peopleAcc.push({
-          full_name: name,
-          role_title: p?.role_title ? String(p.role_title).slice(0, 120) : undefined,
-          department: p?.department ? String(p.department).slice(0, 80) : undefined,
-          email: p?.email && String(p.email).includes("@") ? String(p.email).toLowerCase() : undefined,
-          source_url: r.url,
-        });
-      }
-
-      // Source page record
+    const recordPage = async (url: string, ex: PageExtract) => {
+      scrapedUrls.push(url);
       await supabase.from("source_pages").insert({
-        company_id: companyId, crawl_job_id: jobId ?? null, url: r.url,
-        page_type: classifyPage(r.url),
+        company_id: companyId, crawl_job_id: jobId ?? null, url,
+        page_type: classifyPage(url),
         status_code: 200,
-        extracted_summary: `${emails.size} emails, ${phoneCandidates.length} phone candidates, ${ppl.length} people`,
+        extracted_summary: `${ex.emails.size} emails, ${ex.phones.size} phones, ${ex.people.length} people`,
       });
+      log("info", `Crawled ${url} — ${ex.emails.size} email${ex.emails.size === 1 ? "" : "s"}`, {
+        event: "page_crawled", company: companyName, company_id: companyId, url,
+        page_type: classifyPage(url), emails_on_page: ex.emails.size, people_on_page: ex.people.length,
+      });
+    };
 
-      // Timeline: page crawled
-      log("info", `Crawled ${r.url} — ${emails.size} email${emails.size === 1 ? "" : "s"}`, {
-        event: "page_crawled",
-        company: companyName,
-        company_id: companyId,
-        url: r.url,
-        page_type: classifyPage(r.url),
-        emails_on_page: emails.size,
-        people_on_page: ppl.length,
-      });
+    const HARD_CAP = 5;
+    const remaining = () => HARD_CAP - counter.calls;
+
+    // ──── Tier 1: contact page ────
+    if (remaining() > 0) {
+      const contactCandidates = CONTACT_PATHS.map((p) => `https://${domain}${p}`);
+      const contactUrl = await firstReachable(contactCandidates) ?? `https://${domain}/`;
+      const r = await firecrawlScrape(contactUrl, apiKey, counter);
+      const ex = extractFromPage({ url: contactUrl, ...r }, root);
+      mergeExtract(acc, ex);
+      await recordPage(contactUrl, ex);
+
+      // JS-rendered fallback only if page mentioned email but we got nothing — at most 1 retry
+      if (ex.emails.size === 0 && /(email|e-?post|kontakt|contact)/i.test(`${r.markdown ?? ""}\n${r.html ?? ""}`) && remaining() > 0) {
+        const r2 = await firecrawlScrape(contactUrl, apiKey, counter, { wait: true });
+        const ex2 = extractFromPage({ url: contactUrl, ...r2 }, root);
+        mergeExtract(acc, ex2);
+      }
     }
 
-    // 5) Deduplicate people by full_name (case-insensitive)
-    const seen = new Set<string>();
-    const dedupPeople = peopleAcc.filter((p) => {
-      const k = p.full_name.toLowerCase();
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
+    // Tier 1 success criteria: any generic@ OR any person mail → skip Tier 2/3
+    const hasGeneric = Array.from(acc.emails).some((e) => classifyEmail(e) === "generic");
+    const hasPersonMail = Array.from(acc.emails).some((e) => {
+      const c = classifyEmail(e); return c === "person_high" || c === "person_low";
     });
 
-    // 6) Insert contacts
+    // ──── Tier 2: leadership/team page with JSON-extract (only if no person mail yet) ────
+    // Skip if we already have a person mail. Run if only generic@ (we still want names).
+    const needsTier2 = !hasPersonMail && opt.personNames;
+    if (needsTier2 && remaining() > 0 && counter.llmCalls < 1) {
+      const leadershipCandidates = LEADERSHIP_PATHS.map((p) => `https://${domain}${p}`);
+      const leadershipUrl = await firstReachable(leadershipCandidates);
+      if (leadershipUrl) {
+        const teamPrompt = "Extract decision-makers (CEO/VD, founders, owners, partners, board chair, C-level, managing director) from this page. Return JSON: { people: [{ full_name, role_title, department, email }] }. Prioritize executives over junior staff. Only include real people with verifiable names.";
+        const r = await firecrawlScrape(leadershipUrl, apiKey, counter, { jsonPrompt: teamPrompt });
+        const ex = extractFromPage({ url: leadershipUrl, ...r }, root);
+        mergeExtract(acc, ex);
+        await recordPage(leadershipUrl, ex);
+      }
+    }
+
+    // ──── Tier 3: homepage + map fallback (only if STILL no emails AND no people) ────
+    if (acc.emails.size === 0 && acc.people.length === 0 && remaining() > 0) {
+      const links = await firecrawlMap(domain, apiKey, counter);
+      // Pick most promising in-domain link (not already scraped)
+      const candidate = links.find((l) => {
+        try {
+          const u = new URL(l);
+          if (rootDomain(u.hostname) !== root) return false;
+          if (scrapedUrls.includes(l)) return false;
+          return /\/(kontakt|contact|om-oss|about|ledning|team)/i.test(u.pathname);
+        } catch { return false; }
+      }) ?? `https://${domain}/`;
+      if (remaining() > 0 && !scrapedUrls.includes(candidate)) {
+        const r = await firecrawlScrape(candidate, apiKey, counter);
+        const ex = extractFromPage({ url: candidate, ...r }, root);
+        mergeExtract(acc, ex);
+        await recordPage(candidate, ex);
+      }
+    }
+
+    // ──── Persist ────
     let inserted = { contacts: 0, people: 0, person_emails: 0, synthesized: 0 };
 
     if (opt.genericEmails || opt.personEmails) {
-      for (const e of foundEmails) {
+      for (const e of acc.emails) {
         const cls = classifyEmail(e);
         const isPerson = cls === "person_high" || cls === "person_low";
         if (isPerson && !opt.personEmails) continue;
@@ -430,7 +458,7 @@ Deno.serve(async (req) => {
         const { error } = await supabase.from("contacts").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
           contact_type: isPerson ? "person_email" : "generic_email",
-          value: e, source_url: emailSources.get(e) ?? `https://${domain}`,
+          value: e, source_url: acc.emailSources.get(e) ?? `https://${domain}`,
         });
         if (!error) {
           inserted.contacts++;
@@ -439,7 +467,7 @@ Deno.serve(async (req) => {
       }
     }
     if (opt.phones) {
-      for (const p of foundPhones) {
+      for (const p of acc.phones) {
         const { error } = await supabase.from("contacts").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
           contact_type: "phone", value: p, source_url: `https://${domain}`,
@@ -448,7 +476,7 @@ Deno.serve(async (req) => {
       }
     }
     if (opt.contactForms) {
-      for (const u of foundForms) {
+      for (const u of acc.forms) {
         const { error } = await supabase.from("contacts").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
           contact_type: "contact_form", value: u, source_url: u,
@@ -457,40 +485,47 @@ Deno.serve(async (req) => {
       }
     }
 
-    // 7) Insert people; auto-add their company-domain emails as person_email contacts
+    // People: dedupe + rank decision-makers first
+    const seen = new Set<string>();
+    const dedup = acc.people.filter((p) => {
+      const k = p.full_name.toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+    const ranked = rankPeople(dedup);
+
     if (opt.personNames) {
-      for (const p of dedupPeople) {
+      for (const p of ranked) {
+        const decision = isDecisionMaker(p.role_title);
         const { error } = await supabase.from("contact_people").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
           full_name: p.full_name, role_title: p.role_title ?? null, department: p.department ?? null,
-          source_url: p.source_url,
+          source_url: p.source_url, is_decision_maker: decision,
         });
         if (!error) inserted.people++;
 
         if (p.email && opt.personEmails) {
           const host = emailHost(p.email);
-          if (host && rootDomain(host) === root && !foundEmails.has(p.email)) {
+          if (host && rootDomain(host) === root && !acc.emails.has(p.email)) {
             const { error: e2 } = await supabase.from("contacts").insert({
               company_id: companyId, crawl_job_id: jobId ?? null,
               contact_type: "person_email", value: p.email, source_url: p.source_url,
               is_publicly_listed: true,
             });
-            if (!e2) { inserted.contacts++; inserted.person_emails++; foundEmails.add(p.email); }
+            if (!e2) { inserted.contacts++; inserted.person_emails++; acc.emails.add(p.email); }
           }
         }
       }
     }
 
-    // 8) Pattern-based synthesis (gated)
-    if (opt.personEmails && opt.personNames && dedupPeople.length > 0) {
-      // Look for a confirmed firstname.lastname@root pattern
-      const sample = Array.from(foundEmails).find((e) => {
+    // Pattern-based synthesis: prioritize decision-makers
+    if (opt.personEmails && opt.personNames && ranked.length > 0) {
+      const sample = Array.from(acc.emails).find((e) => {
         const local = e.split("@")[0]?.toLowerCase() ?? "";
         return /^[a-z]+\.[a-z]+$/.test(local) && rootDomain(emailHost(e)) === root;
       });
       if (sample) {
-        const pattern = "first.last"; // only synthesize the confirmed pattern
-        const peopleNoEmail = dedupPeople.filter((p) => !p.email);
+        const peopleNoEmail = ranked.filter((p) => !p.email);
         for (const p of peopleNoEmail) {
           const tokens = p.full_name.toLowerCase()
             .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
@@ -500,66 +535,69 @@ Deno.serve(async (req) => {
           const last = tokens[tokens.length - 1];
           if (first.length < 2 || last.length < 2) continue;
           const synth = `${first}.${last}@${root}`;
-          if (foundEmails.has(synth)) continue;
+          if (acc.emails.has(synth)) continue;
           const { error } = await supabase.from("contacts").insert({
             company_id: companyId, crawl_job_id: jobId ?? null,
             contact_type: "person_email", value: synth, source_url: p.source_url,
             is_publicly_listed: false,
           });
-          if (!error) { inserted.synthesized++; inserted.contacts++; foundEmails.add(synth); }
+          if (!error) { inserted.synthesized++; inserted.contacts++; acc.emails.add(synth); }
         }
-        log("info", `Synthesized ${inserted.synthesized} emails using pattern "${pattern}" on ${root}`);
       }
     }
 
-    // 9) MX provider (logged only)
-    const mx = await detectMxProvider(root);
-
-    // Timeline: emails_found
-    if (inserted.contacts > 0) {
-      const personSamples = Array.from(foundEmails).filter((e) => {
-        const c = classifyEmail(e);
-        return c === "person_high" || c === "person_low";
-      }).slice(0, 3);
-      const genericSamples = Array.from(foundEmails).filter((e) => classifyEmail(e) === "generic").slice(0, 3);
-      log("success", `Found ${foundEmails.size} email${foundEmails.size === 1 ? "" : "s"} on ${domain}`, {
-        event: "emails_found",
-        company: companyName,
-        company_id: companyId,
-        host: domain,
-        person_emails: inserted.person_emails,
-        generic_emails: inserted.contacts - inserted.person_emails - foundPhones.size - foundForms.size,
-        synthesized: inserted.synthesized,
-        samples: [...personSamples, ...genericSamples].slice(0, 3),
-      });
+    // Update job-level credit counter
+    if (jobId && counter.calls > 0) {
+      // Best-effort atomic increment via raw UPDATE
+      await supabase.rpc("exec_sql" as any, {}).catch(() => {});
+      // Fallback: read-modify-write
+      const { data: jr } = await supabase.from("crawl_jobs").select("firecrawl_calls").eq("id", jobId).maybeSingle();
+      const cur = (jr as any)?.firecrawl_calls ?? 0;
+      await supabase.from("crawl_jobs").update({ firecrawl_calls: cur + counter.calls }).eq("id", jobId);
     }
 
-    // Timeline: people_extracted
+    // Timeline
+    if (inserted.contacts > 0) {
+      const personSamples = Array.from(acc.emails).filter((e) => {
+        const c = classifyEmail(e); return c === "person_high" || c === "person_low";
+      }).slice(0, 3);
+      const genericSamples = Array.from(acc.emails).filter((e) => classifyEmail(e) === "generic").slice(0, 3);
+      log("success", `Found ${acc.emails.size} email${acc.emails.size === 1 ? "" : "s"} on ${domain} (${counter.calls} credits)`, {
+        event: "emails_found", company: companyName, company_id: companyId, host: domain,
+        person_emails: inserted.person_emails,
+        generic_emails: inserted.contacts - inserted.person_emails - acc.phones.size - acc.forms.size,
+        synthesized: inserted.synthesized,
+        samples: [...personSamples, ...genericSamples].slice(0, 3),
+        firecrawl_calls: counter.calls,
+      });
+    }
     if (inserted.people > 0) {
-      log("success", `Extracted ${inserted.people} ${inserted.people === 1 ? "person" : "people"} from ${companyName}`, {
-        event: "people_extracted",
-        company: companyName,
-        company_id: companyId,
-        count: inserted.people,
-        samples: dedupPeople.slice(0, 3).map((p) => ({ name: p.full_name, role: p.role_title ?? null })),
+      const decisionCount = ranked.filter((p) => isDecisionMaker(p.role_title)).length;
+      log("success", `Extracted ${inserted.people} ${inserted.people === 1 ? "person" : "people"} (${decisionCount} decision-makers) from ${companyName}`, {
+        event: "people_extracted", company: companyName, company_id: companyId,
+        count: inserted.people, decision_makers: decisionCount,
+        samples: ranked.slice(0, 3).map((p) => ({ name: p.full_name, role: p.role_title ?? null, decision: isDecisionMaker(p.role_title) })),
       });
     }
 
     const summary = {
-      domain, pages: pages.length,
-      emails_found: foundEmails.size,
+      domain, pages: scrapedUrls.length,
+      emails_found: acc.emails.size,
       person_emails: inserted.person_emails,
       people_extracted: inserted.people,
       synthesized: inserted.synthesized,
-      mx_provider: mx,
+      firecrawl_calls: counter.calls,
+      llm_calls: counter.llmCalls,
     };
     log(inserted.contacts === 0 ? "warn" : "success",
-      inserted.contacts === 0 ? `No public contacts on ${domain}` : `Extracted ${inserted.contacts} contacts (${inserted.person_emails} person, ${inserted.people} people) from ${domain}`,
+      inserted.contacts === 0
+        ? `No public contacts on ${domain} (${counter.calls} credits used)`
+        : `Extracted ${inserted.contacts} contacts from ${domain} (${counter.calls} credits)`,
       summary);
 
     return new Response(JSON.stringify({
       ...summary, inserted,
-      emails: Array.from(foundEmails), phones: Array.from(foundPhones), forms: Array.from(foundForms),
+      emails: Array.from(acc.emails), phones: Array.from(acc.phones), forms: Array.from(acc.forms),
     }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

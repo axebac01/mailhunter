@@ -294,19 +294,7 @@ Deno.serve(async (req) => {
     let allRanked = Array.from(merged.values()).sort((a, b) => b.score - a.score);
     let best: Cand | undefined = allRanked[0];
 
-    if (best && best.source === "search" && best.score >= 3 && best.score <= 4) {
-      const mapped = await mapFirecrawl(best.host, apiKey);
-      for (const u of mapped.slice(0, 10)) {
-        const h = hostFromUrl(u);
-        if (!h) continue;
-        const score = scoreCandidate(h, nameTokens, country);
-        if (score > (merged.get(h)?.score ?? -1)) {
-          merged.set(h, { host: h, url: u, score, source: "map" });
-        }
-      }
-      allRanked = Array.from(merged.values()).sort((a, b) => b.score - a.score);
-      best = allRanked[0];
-    }
+    // Map fallback removed (cost vs. nytta). Verify directly when uncertain.
 
     if (best) {
       const stem = hostStem(best.host);
@@ -318,7 +306,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (best && best.score < 5 && allRanked.length >= 2 && (allRanked[0].score - allRanked[1].score) <= 1) {
+    if (best && best.score < 3 && allRanked.length >= 2 && (allRanked[0].score - allRanked[1].score) <= 1) {
       const pick = await llmTiebreaker(companyName, country ?? null, allRanked.slice(0, 5));
       if (pick) {
         const found = allRanked.find((c) => c.host === pick);
