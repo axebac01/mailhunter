@@ -158,18 +158,20 @@ export default function JobDetail() {
   });
 
   const resumeScraping = useMutation({
-    mutationFn: async () => {
-      const currentMeta = (job.data?.metaJson ?? {}) as JobMetaJson;
-      const { paused_reason: _r, paused_at: _a, ...rest } = currentMeta;
-      await api.patchJob(id, { status: "running", meta_json: rest as never });
-      const { data, error } = await supabase.functions.invoke("scrape-emails-batch", { body: { jobId: id } });
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: () => {
-      toast.success("Resumed scraping");
+    mutationFn: async () => api.resumeJob(id),
+    onSuccess: (r) => {
+      const reset = r?.resetFailed ?? 0;
+      const pending = r?.pendingResolution ?? 0;
+      toast.success(
+        reset > 0
+          ? `Resumed: ${reset} failed domains reset, ${pending} pending resolution.`
+          : pending > 0
+            ? `Resumed: ${pending} domains pending resolution.`
+            : "Resumed scraping",
+      );
       qc.invalidateQueries({ queryKey: ["job", id] });
       qc.invalidateQueries({ queryKey: ["logs", id] });
+      qc.invalidateQueries({ queryKey: ["domainStats", id] });
     },
     onError: (e: Error) => toast.error(e?.message ?? "Resume failed"),
   });

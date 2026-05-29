@@ -586,6 +586,13 @@ export const api = {
     if (r4.error) throw r4.error;
   },
 
+  // Robust, manual resume of a single job: resets failed domains and kicks resolver + scraper.
+  async resumeJob(jobId: string): Promise<{ resetFailed: number; pendingResolution: number }> {
+    const { data, error } = await supabase.functions.invoke("resume-job", { body: { jobId } });
+    if (error) throw error;
+    return data as { resetFailed: number; pendingResolution: number };
+  },
+
   // Reseed / clear
   async clearAll() {
     const { error } = await supabase.rpc("clear_all_data");
