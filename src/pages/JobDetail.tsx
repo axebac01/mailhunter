@@ -287,12 +287,13 @@ export default function JobDetail() {
         </SectionCard>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
         <KpiCard label="Companies" value={fmtNum(j.companiesFound)} icon={<Building2 className="h-4 w-4" />} />
         <KpiCard label="Contacts" value={fmtNum(j.contactsFound)} icon={<Mail className="h-4 w-4" />} />
         <KpiCard label="Person emails" value={fmtNum(personEmailCount)} icon={<Mail className="h-4 w-4" />} />
         <KpiCard label="People" value={fmtNum(j.peopleFound)} icon={<Users className="h-4 w-4" />} />
         <KpiCard label="Pages crawled" value={fmtNum(j.pagesCrawled)} icon={<Globe className="h-4 w-4" />} />
+        <KpiCard label="Firecrawl credits" value={fmtNum(j.firecrawlCalls)} icon={<Activity className="h-4 w-4" />} />
       </div>
 
       {j.sourceType === "uploaded" && domainStatsData && (
