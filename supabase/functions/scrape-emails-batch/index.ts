@@ -8,6 +8,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 const CONCURRENCY = 6;
 const PER_COMPANY_TIMEOUT_MS = 45_000;
 const REINVOKE_DELAY_MS = 15_000;
+const STALL_WAVE_LIMIT = 20; // ~5 min of no progress → auto-pause
+const RESOLVER_KICK_AFTER_WAVES = 2; // ~30s pending without movement → re-kick resolver
 
 async function runPool<T>(items: T[], worker: (i: T) => Promise<void>, n: number): Promise<void> {
   let idx = 0;
@@ -175,7 +177,8 @@ Deno.serve(async (req) => {
         // even if our cached `job.status` snapshot still says "running".
         const { data: fresh } = await supabase
           .from("crawl_jobs").select("status, meta_json").eq("id", jobId).maybeSingle();
-        const reason = (fresh?.meta_json as Record<string, unknown> | null)?.paused_reason;
+        const meta = (fresh?.meta_json as Record<string, unknown> | null) ?? {};
+        const reason = meta.paused_reason;
         if (fresh?.status !== "running" || reason === "firecrawl_payment_required") {
           await supabase.from("crawl_logs").insert({
             crawl_job_id: jobId, level: "warn",
@@ -185,13 +188,55 @@ Deno.serve(async (req) => {
             status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
+
+        // Watchdog: track stall + auto-kick resolver when nothing is moving
+        const lastPending = Number(meta.watchdog_last_pending ?? -1);
+        const idleWaves = Number(meta.watchdog_idle_waves ?? 0);
+        const noProgress = lastPending === pendingResolution.length;
+        const nextIdleWaves = noProgress ? idleWaves + 1 : 0;
+
+        // Stall protection: auto-pause after STALL_WAVE_LIMIT waves of no progress
+        if (nextIdleWaves >= STALL_WAVE_LIMIT) {
+          await supabase.from("crawl_jobs").update({
+            status: "paused",
+            meta_json: { ...meta, paused_reason: "stalled", stalled_at: new Date().toISOString() },
+          }).eq("id", jobId);
+          await supabase.from("crawl_logs").insert({
+            crawl_job_id: jobId, level: "error",
+            message: `Auto-paused: no progress for ${STALL_WAVE_LIMIT} waves (~${Math.round(STALL_WAVE_LIMIT * REINVOKE_DELAY_MS / 1000)}s). ${pendingResolution.length} domains still pending. Click Start to retry.`,
+          });
+          return new Response(JSON.stringify({ stalled: true, pending: pendingResolution.length }), {
+            status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        // Auto-kick resolver if it hasn't been moving the queue
+        let kicked = false;
+        if (nextIdleWaves >= RESOLVER_KICK_AFTER_WAVES && nextIdleWaves % RESOLVER_KICK_AFTER_WAVES === 0) {
+          try {
+            await fetch(`${SUPABASE_URL}/functions/v1/resolve-domains-batch`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ jobId, retryFailed: true }),
+            });
+            kicked = true;
+          } catch (_) { /* best effort */ }
+        }
+
+        // Persist watchdog counters
+        await supabase.from("crawl_jobs").update({
+          meta_json: { ...meta, watchdog_last_pending: pendingResolution.length, watchdog_idle_waves: nextIdleWaves },
+        }).eq("id", jobId);
+
         await supabase.from("crawl_logs").insert({
-          crawl_job_id: jobId, level: "info",
-          message: `Waiting on domain resolution: ${pendingResolution.length} of ${allCompanies.length} still pending. Re-checking in ${Math.round(REINVOKE_DELAY_MS / 1000)}s.`,
+          crawl_job_id: jobId, level: kicked ? "warn" : "info",
+          message: kicked
+            ? `Waiting on resolution: ${pendingResolution.length} pending. No movement for ${nextIdleWaves} waves — kicked resolver.`
+            : `Waiting on domain resolution: ${pendingResolution.length} of ${allCompanies.length} still pending. Re-checking in ${Math.round(REINVOKE_DELAY_MS / 1000)}s.`,
         });
         await refreshCounters(scrapedIds.size);
         scheduleReinvoke(SUPABASE_URL, SERVICE_KEY, jobId);
-        return new Response(JSON.stringify({ waiting: pendingResolution.length, scraped: scrapedIds.size }), {
+        return new Response(JSON.stringify({ waiting: pendingResolution.length, scraped: scrapedIds.size, kickedResolver: kicked }), {
           status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }

@@ -158,18 +158,20 @@ export default function JobDetail() {
   });
 
   const resumeScraping = useMutation({
-    mutationFn: async () => {
-      const currentMeta = (job.data?.metaJson ?? {}) as JobMetaJson;
-      const { paused_reason: _r, paused_at: _a, ...rest } = currentMeta;
-      await api.patchJob(id, { status: "running", meta_json: rest as never });
-      const { data, error } = await supabase.functions.invoke("scrape-emails-batch", { body: { jobId: id } });
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: () => {
-      toast.success("Resumed scraping");
+    mutationFn: async () => api.resumeJob(id),
+    onSuccess: (r) => {
+      const reset = r?.resetFailed ?? 0;
+      const pending = r?.pendingResolution ?? 0;
+      toast.success(
+        reset > 0
+          ? `Resumed: ${reset} failed domains reset, ${pending} pending resolution.`
+          : pending > 0
+            ? `Resumed: ${pending} domains pending resolution.`
+            : "Resumed scraping",
+      );
       qc.invalidateQueries({ queryKey: ["job", id] });
       qc.invalidateQueries({ queryKey: ["logs", id] });
+      qc.invalidateQueries({ queryKey: ["domainStats", id] });
     },
     onError: (e: Error) => toast.error(e?.message ?? "Resume failed"),
   });
@@ -285,12 +287,13 @@ export default function JobDetail() {
         </SectionCard>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
         <KpiCard label="Companies" value={fmtNum(j.companiesFound)} icon={<Building2 className="h-4 w-4" />} />
         <KpiCard label="Contacts" value={fmtNum(j.contactsFound)} icon={<Mail className="h-4 w-4" />} />
         <KpiCard label="Person emails" value={fmtNum(personEmailCount)} icon={<Mail className="h-4 w-4" />} />
         <KpiCard label="People" value={fmtNum(j.peopleFound)} icon={<Users className="h-4 w-4" />} />
         <KpiCard label="Pages crawled" value={fmtNum(j.pagesCrawled)} icon={<Globe className="h-4 w-4" />} />
+        <KpiCard label="Firecrawl credits" value={fmtNum(j.firecrawlCalls)} icon={<Activity className="h-4 w-4" />} />
       </div>
 
       {j.sourceType === "uploaded" && domainStatsData && (

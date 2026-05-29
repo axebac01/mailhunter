@@ -22,12 +22,20 @@ export function JobStatusBanners({ job, domainStats, resumePending, onResume }: 
               <div className="flex-1">
                 <div className="font-medium text-destructive">Auto-paused — Firecrawl ran out of credits.</div>
                 <div className="text-muted-foreground mt-0.5">
-                  Top up your Firecrawl account, then click <strong>Start</strong> to continue domain resolution. Unresolved companies were marked as failed and can be retried after resuming.
+                  Top up your Firecrawl account, then click <strong>Start</strong> to resume. Failed domains will be reset and re-tried automatically — no other jobs are started.
                 </div>
               </div>
               <Button asChild size="sm" variant="outline">
                 <a href="https://www.firecrawl.dev/app/billing" target="_blank" rel="noreferrer">Open Firecrawl</a>
               </Button>
+            </div>
+          )}
+          {job.status === "paused" && job.metaJson?.paused_reason === "stalled" && (
+            <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
+              <div className="font-medium">Auto-paused — no progress for several minutes.</div>
+              <div className="text-muted-foreground mt-0.5">
+                The job stopped making progress (likely Firecrawl errors or a stuck resolver). Click <strong>Start</strong> to retry from a clean state.
+              </div>
             </div>
           )}
           <div className={cn(
