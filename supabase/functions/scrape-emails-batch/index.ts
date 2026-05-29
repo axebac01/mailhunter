@@ -8,6 +8,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 const CONCURRENCY = 6;
 const PER_COMPANY_TIMEOUT_MS = 45_000;
 const REINVOKE_DELAY_MS = 15_000;
+const STALL_WAVE_LIMIT = 20; // ~5 min of no progress → auto-pause
+const RESOLVER_KICK_AFTER_WAVES = 2; // ~30s pending without movement → re-kick resolver
 
 async function runPool<T>(items: T[], worker: (i: T) => Promise<void>, n: number): Promise<void> {
   let idx = 0;
