@@ -32,9 +32,14 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 1) Clear paused_reason in meta_json, set status = running
+    // 1) Clear paused_reason + any stale worker slot in meta_json, set status = running
     const currentMeta = (job.meta_json ?? {}) as Record<string, unknown>;
-    const { paused_reason: _r, paused_at: _a, stalled_at: _s, ...restMeta } = currentMeta;
+    const {
+      paused_reason: _r, paused_at: _a, stalled_at: _s,
+      worker_id: _wid, worker_heartbeat: _whb,
+      watchdog_last_pending: _wlp, watchdog_idle_waves: _wiw,
+      ...restMeta
+    } = currentMeta;
 
     await supabase.from("crawl_jobs").update({
       status: "running",
