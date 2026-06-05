@@ -236,6 +236,7 @@ Deno.serve(async (req) => {
             crawl_job_id: jobId, level: "warn",
             message: `Worker exiting — job ${fresh?.status ?? "unknown"}${reason ? ` (reason: ${reason})` : ""}. No re-invoke scheduled.`,
           });
+          await stopHeartbeat();
           return new Response(JSON.stringify({ skipped: true, reason: String(reason ?? fresh?.status) }), {
             status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
