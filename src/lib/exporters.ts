@@ -16,7 +16,9 @@ export const CONTACT_EXPORT_FIELDS = [
 export const PEOPLE_EXPORT_FIELDS = [
   "company_name", "website", "domain", "country", "industry",
   "first_name", "last_name", "full_name",
-  "role_title", "department", "source_url", "found_at",
+  "role_title", "department",
+  "email", "email_confidence", "phone",
+  "source_url", "found_at",
   "job_name", "import_status",
 ] as const;
 
