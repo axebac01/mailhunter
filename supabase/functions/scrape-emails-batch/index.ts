@@ -139,8 +139,8 @@ Deno.serve(async (req) => {
     }
 
     const withDomain = allCompanies.filter((c: any) => c.domain);
-    const pendingResolution = allCompanies.filter((c: any) => !c.domain && c.domain_status !== "failed");
-    const failedResolution = allCompanies.filter((c: any) => !c.domain && c.domain_status === "failed");
+    const pendingResolution = allCompanies.filter((c: any) => !c.domain && c.domain_status !== "failed" && c.domain_status !== "no_domain_found");
+    const failedResolution = allCompanies.filter((c: any) => !c.domain && (c.domain_status === "failed" || c.domain_status === "no_domain_found"));
     const todo = withDomain.filter((c: any) => !scrapedIds.has(c.id));
     const alreadyScraped = withDomain.length - todo.length;
 
@@ -217,7 +217,7 @@ Deno.serve(async (req) => {
             await fetch(`${SUPABASE_URL}/functions/v1/resolve-domains-batch`, {
               method: "POST",
               headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ jobId, retryFailed: true }),
+              body: JSON.stringify({ jobId, retryFailed: true, includeUnresolved: true }),
             });
             kicked = true;
           } catch (_) { /* best effort */ }

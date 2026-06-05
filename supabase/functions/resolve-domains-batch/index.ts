@@ -257,13 +257,13 @@ async function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T
 }
 
 async function resolveOne(
-  company: { id: string; name: string; country: string | null },
+  company: { id: string; name: string; country: string | null; domain_status?: string | null },
   jobCountry: string | null,
   apiKey: string,
   supabase: any,
   jobId?: string,
   blocklistGlobal?: Set<string>,
-): Promise<{ id: string; status: "resolved" | "failed"; domain?: string; queryUsed?: string; source?: string }> {
+): Promise<{ id: string; status: "resolved" | "failed" | "no_domain_found"; domain?: string; queryUsed?: string; source?: string }> {
   const { id, name } = company;
   const rawCountry = company.country ?? jobCountry ?? null;
   const country = normalizeCountry(rawCountry);
@@ -435,7 +435,9 @@ async function resolveOne(
     return { id, status: "resolved", domain: best.host, queryUsed: bestQuery, source: finalSource };
   }
 
-  await supabase.from("companies").update({ domain_status: "failed" }).eq("id", id);
+  // Escalate to no_domain_found on second consecutive failure (was already 'failed' going in)
+  const finalStatus = company.domain_status === "failed" ? "no_domain_found" : "failed";
+  await supabase.from("companies").update({ domain_status: finalStatus }).eq("id", id);
   if (jobId) {
     await supabase.from("crawl_logs").insert({
       crawl_job_id: jobId,
@@ -448,7 +450,7 @@ async function resolveOne(
       },
     });
   }
-  return { id, status: "failed" };
+  return { id, status: finalStatus as "failed" | "no_domain_found" };
 }
 
 async function runPool<T, R>(items: T[], worker: (i: T) => Promise<R>, n: number): Promise<R[]> {
@@ -473,7 +475,7 @@ Deno.serve(async (req) => {
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const body = await req.json().catch(() => ({}));
-    const { companyIds, importId, jobId, retryFailed, reresolveAll } = body ?? {};
+    const { companyIds, importId, jobId, retryFailed, reresolveAll, includeUnresolved } = body ?? {};
 
     let ids: string[] = Array.isArray(companyIds) ? companyIds : [];
     if (importId) {
@@ -535,9 +537,11 @@ Deno.serve(async (req) => {
     // Selection mode
     const todo = reresolveAll
       ? allCompanies
+      : (retryFailed && includeUnresolved)
+      ? allCompanies.filter((c: any) => !c.domain && c.domain_status !== "no_domain_found")
       : retryFailed
       ? allCompanies.filter((c: any) => !c.domain && c.domain_status === "failed")
-      : allCompanies.filter((c: any) => !c.domain);
+      : allCompanies.filter((c: any) => !c.domain && c.domain_status !== "no_domain_found");
 
     // Time-budget the run so we always reply well under the 150s edge timeout.
     // Process a slice this invocation; if more remain, fire-and-forget a
