@@ -75,12 +75,63 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── Singleton-guard: prevent multiple parallel batch workers for the same job ──
+    // Each running worker writes a heartbeat (ISO timestamp) into meta_json.worker_heartbeat.
+    // If a fresh heartbeat (<30s old) exists, another worker is already processing this job — exit.
+    const WORKER_STALE_MS = 30_000;
+    const HEARTBEAT_INTERVAL_MS = 10_000;
+    const workerId = crypto.randomUUID();
+    const existingMeta = (job.meta_json as Record<string, unknown> | null) ?? {};
+    const existingHb = existingMeta.worker_heartbeat ? Date.parse(String(existingMeta.worker_heartbeat)) : 0;
+    const existingWorker = existingMeta.worker_id ? String(existingMeta.worker_id) : null;
+    if (existingHb && Date.now() - existingHb < WORKER_STALE_MS && existingWorker !== workerId) {
+      await supabase.from("crawl_logs").insert({
+        crawl_job_id: jobId, level: "info",
+        message: `Another batch worker is already active (heartbeat ${Math.round((Date.now() - existingHb) / 1000)}s ago) — exiting to avoid duplicate scrapes.`,
+      });
+      return new Response(JSON.stringify({ skipped: true, reason: "worker_active" }), {
+        status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    // Claim the worker slot
+    await supabase.from("crawl_jobs").update({
+      meta_json: { ...existingMeta, worker_id: workerId, worker_heartbeat: new Date().toISOString() },
+    }).eq("id", jobId);
+
+    // Keep-alive heartbeat loop, cleared when work finishes
+    let heartbeatTimer: number | undefined;
+    const startHeartbeat = () => {
+      heartbeatTimer = setInterval(async () => {
+        const { data: hb } = await supabase.from("crawl_jobs").select("meta_json").eq("id", jobId).maybeSingle();
+        const m = (hb?.meta_json as Record<string, unknown> | null) ?? {};
+        // Only refresh if we still own the slot
+        if (m.worker_id === workerId) {
+          await supabase.from("crawl_jobs").update({
+            meta_json: { ...m, worker_heartbeat: new Date().toISOString() },
+          }).eq("id", jobId);
+        } else if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+        }
+      }, HEARTBEAT_INTERVAL_MS) as unknown as number;
+    };
+    const stopHeartbeat = async () => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      // Release the slot
+      const { data: hb } = await supabase.from("crawl_jobs").select("meta_json").eq("id", jobId).maybeSingle();
+      const m = (hb?.meta_json as Record<string, unknown> | null) ?? {};
+      if (m.worker_id === workerId) {
+        const { worker_id: _wid, worker_heartbeat: _whb, ...rest } = m;
+        await supabase.from("crawl_jobs").update({ meta_json: rest }).eq("id", jobId);
+      }
+    };
+
     // Companies linked via this job's imports
     const { data: imports } = await supabase.from("imports").select("id").eq("crawl_job_id", jobId);
     const importIds = (imports ?? []).map((i: any) => i.id);
     if (importIds.length === 0) {
       await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level: "warn", message: "No imports linked to this job — nothing to scrape." });
       await supabase.from("crawl_jobs").update({ status: "completed", progress: 100 }).eq("id", jobId);
+      await stopHeartbeat();
       return new Response(JSON.stringify({ scraped: 0, total: 0 }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -107,6 +158,7 @@ Deno.serve(async (req) => {
     if (ids.length === 0) {
       await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level: "warn", message: "No matched companies for this job — nothing to scrape." });
       await supabase.from("crawl_jobs").update({ status: "completed", progress: 100 }).eq("id", jobId);
+      await stopHeartbeat();
       return new Response(JSON.stringify({ scraped: 0, total: 0 }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -184,6 +236,7 @@ Deno.serve(async (req) => {
             crawl_job_id: jobId, level: "warn",
             message: `Worker exiting — job ${fresh?.status ?? "unknown"}${reason ? ` (reason: ${reason})` : ""}. No re-invoke scheduled.`,
           });
+          await stopHeartbeat();
           return new Response(JSON.stringify({ skipped: true, reason: String(reason ?? fresh?.status) }), {
             status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
@@ -205,6 +258,7 @@ Deno.serve(async (req) => {
             crawl_job_id: jobId, level: "error",
             message: `Auto-paused: no progress for ${STALL_WAVE_LIMIT} waves (~${Math.round(STALL_WAVE_LIMIT * REINVOKE_DELAY_MS / 1000)}s). ${pendingResolution.length} domains still pending. Click Start to retry.`,
           });
+          await stopHeartbeat();
           return new Response(JSON.stringify({ stalled: true, pending: pendingResolution.length }), {
             status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
@@ -235,6 +289,7 @@ Deno.serve(async (req) => {
             : `Waiting on domain resolution: ${pendingResolution.length} of ${allCompanies.length} still pending. Re-checking in ${Math.round(REINVOKE_DELAY_MS / 1000)}s.`,
         });
         await refreshCounters(scrapedIds.size);
+        await stopHeartbeat();
         scheduleReinvoke(SUPABASE_URL, SERVICE_KEY, jobId);
         return new Response(JSON.stringify({ waiting: pendingResolution.length, scraped: scrapedIds.size, kickedResolver: kicked }), {
           status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -244,6 +299,7 @@ Deno.serve(async (req) => {
       await refreshCounters(scrapedIds.size);
       await supabase.from("crawl_jobs").update({ status: "completed", progress: 100 }).eq("id", jobId);
       await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level: "success", message: `Scrape complete: ${scrapedIds.size} companies processed in total.` });
+      await stopHeartbeat();
       return new Response(JSON.stringify({ scraped: scrapedIds.size, done: true }), {
         status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -253,10 +309,41 @@ Deno.serve(async (req) => {
     const totalScrapedSoFar = () => scrapedIds.size + scrapedThisWave;
 
     const work = (async () => {
+      startHeartbeat();
       try {
         await runPool(todo, async (c: any) => {
           const { data: cur } = await supabase.from("crawl_jobs").select("status").eq("id", jobId).maybeSingle();
           if (cur?.status !== "running") return;
+
+          // ── Per-company lock (5 min) to prevent parallel duplicate scrapes ──
+          // Atomic claim: only succeeds if no fresh lock exists. RowMatch count tells us if we got the slot.
+          const lockCutoff = new Date(Date.now() - 5 * 60_000).toISOString();
+          const { data: locked, error: lockErr } = await supabase
+            .from("companies")
+            .update({ scrape_lock_at: new Date().toISOString() })
+            .eq("id", c.id)
+            .or(`scrape_lock_at.is.null,scrape_lock_at.lt.${lockCutoff}`)
+            .select("id");
+          if (lockErr || !locked || locked.length === 0) {
+            await supabase.from("crawl_logs").insert({
+              crawl_job_id: jobId, level: "info",
+              message: `Skipping ${c.name ?? c.domain} — already being scraped by another worker.`,
+              meta_json: { event: "lock_skip", company_id: c.id },
+            });
+            return;
+          }
+
+          // ── Fresh source_pages double-check (race-window close) ──
+          const { count: existingPages } = await supabase
+            .from("source_pages")
+            .select("id", { count: "exact", head: true })
+            .eq("company_id", c.id)
+            .eq("crawl_job_id", jobId);
+          if ((existingPages ?? 0) > 0) {
+            // Already scraped in this job — release lock and skip
+            await supabase.from("companies").update({ scrape_lock_at: null }).eq("id", c.id);
+            return;
+          }
 
           await supabase.from("crawl_logs").insert({
             crawl_job_id: jobId, level: "info",
@@ -300,6 +387,9 @@ Deno.serve(async (req) => {
               crawl_job_id: jobId, level: "error",
               message: aborted ? `Scrape timed out (>${PER_COMPANY_TIMEOUT_MS}ms) for ${c.domain}` : `Scrape threw for ${c.domain}: ${e?.message ?? e}`,
             });
+          } finally {
+            // Always release lock so this company can be retried later if needed
+            await supabase.from("companies").update({ scrape_lock_at: null }).eq("id", c.id);
           }
           await supabase.from("crawl_logs").insert({
             crawl_job_id: jobId, level: ok ? "info" : "warn",
@@ -322,12 +412,6 @@ Deno.serve(async (req) => {
           return;
         }
 
-        // Are there still companies awaiting domain resolution?
-        const { data: stillCompanies } = await supabase
-          .from("companies")
-          .select("id, domain, domain_status")
-          .in("id", ids.slice(0, 1)); // cheap probe; we'll do full check below
-
         // Full check: look up all companies again in chunks
         const refreshed: any[] = [];
         for (let i = 0; i < ids.length; i += CHUNK) {
@@ -335,7 +419,7 @@ Deno.serve(async (req) => {
             .select("id, domain, domain_status").in("id", ids.slice(i, i + CHUNK));
           if (chunk) refreshed.push(...chunk);
         }
-        const stillPending = refreshed.filter((c: any) => !c.domain && c.domain_status !== "failed").length;
+        const stillPending = refreshed.filter((c: any) => !c.domain && c.domain_status !== "failed" && c.domain_status !== "no_domain_found").length;
         const resolvedNow = refreshed.filter((c: any) => c.domain).length;
 
         // Refresh scraped set
@@ -377,6 +461,8 @@ Deno.serve(async (req) => {
         });
         // Try to recover by re-invoking
         scheduleReinvoke(SUPABASE_URL, SERVICE_KEY, jobId);
+      } finally {
+        await stopHeartbeat();
       }
     })();
 

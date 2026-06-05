@@ -1,58 +1,78 @@
-## Vad som hände med CRMdata:Fintech
+# Analys: CRMdata: Fintech
 
-Jobbet fastnade på 83% (60 av 74 företag scrapade) i ett oändligt watchdog-loop tills stall-skyddet pausade det efter ~5 min.
+## Resultat
+| Mätvärde | Värde |
+|---|---|
+| Företag i jobbet | 74 |
+| Domäner upplösta | 71 (3 utan domän) |
+| Företag scrapade | 72 |
+| Personer (people) | 191 (∅ 2,65/bolag, 32 bolag fick träff) |
+| Kontakter (e‑post/tel/form) | 225 (∅ 3,13/bolag, 48 bolag fick träff) |
+| Source pages skrivna | **328** |
+| **Unika** URLer scrapade | **126** |
+| Förlorade dubblettscrapningar | **~202 (≈62 %)** |
+| `firecrawl_calls`-räknaren | 0 (kolumnen fanns inte vid körningen) |
 
-**Status i databasen för de 14 olösta företagen:**
-- 12 har `domain_status = 'unresolved'` (aldrig prövade klart)
-- 2 har `domain_status = 'failed'` (t.ex. "Evida AB" — söket hittar inget rimligt)
+## Vad var bra
+- `scrape-emails` är redan trim­mat: tier‑1 kontaktsida (1 credit) → tier‑2 ledningssida + 1 LLM‑extrahering (≈5) → tier‑3 map+homepage (≈2). Hård cap 5 scrapes + 1 LLM/bolag.
+- Sibling‑cache (samma domän, annan företagsrad) ger 0 credits.
+- Per *unik* URL ligger vi alltså på ~126 page‑scrapes + några map/LLM = ~150–200 credits totalt → **uppskattat 0,7–0,9 credit per kontakt**, vilket är bra.
 
-**Buggen** finns i `scrape-emails-batch/index.ts` rad 220:
+## Vad var dåligt
+**Samma URL scrapades upp till 11 gånger för samma bolag, alla inom samma minut** (t.ex. `inyett.com/` 11×, `minnatechnologies.com/ledning` 8×). Orsak: `scrape-emails-batch` har ingen lås­mekanism. När watchdogen/återinvokeringen triggar en ny våg innan föregående våg hunnit skriva `source_pages`, plockar nya `runPool`-instansen samma bolag igen. Användarens manuella Start‑klick förvärrar det.
+
+Effekten i siffror: ~200 av 328 page‑scrapes var rena dubbletter → vid skalning är det ~60 % credits i sjön.
+
+# Plan för att förbättra effektiviteten
+
+## 1. Per‑bolag lås i `scrape-emails-batch`
+Lägg till en lättviktslås på company‑nivå innan `scrape-emails` invokas:
+
+- Inför `companies.meta_json.scrape_lock = { job_id, started_at }` (eller en ny `scrape_status`‑kolumn med värden `idle | in_progress | done`).
+- I `runPool`‑workern: `update companies set meta_json = jsonb_set(... 'scrape_lock' ...) where id = ? and (meta_json->'scrape_lock' is null or (meta_json->'scrape_lock'->>'started_at')::timestamptz < now() - interval '5 min')` — om 0 rader uppdaterades → bolaget är redan låst, hoppa över.
+- Lås släpps när scrape är klar (oavsett ok/fel) eller när `source_pages` skrivs.
+
+Detta eliminerar dubbletter både inom samma våg, mellan parallella vågor och vid manuella om­start.
+
+## 2. Singleton‑guard på batch‑workern
+Innan en `scrape-emails-batch`‑invokering startar `runPool`:
+- Sätt `crawl_jobs.meta_json.worker_heartbeat = now()` atomärt.
+- Om en annan heartbeat är < 30 s gammal → exit direkt (logga "another worker active").
+- Heartbeata var 10:e sekund medan vågen kör.
+
+Stoppar parallella återinvokeringar (watchdog + manuell Start + scheduleReinvoke som överlappar).
+
+## 3. Färsk dubbel­check av `source_pages` precis innan scrape
+I `runPool`‑workern, direkt före `fetch(/scrape-emails)`:
 ```ts
-body: JSON.stringify({ jobId, retryFailed: true }),
+const { count } = await supabase.from('source_pages')
+  .select('id', { count: 'exact', head: true })
+  .eq('company_id', c.id).eq('crawl_job_id', jobId);
+if (count && count > 0) return; // någon hann scrapa
 ```
+Stänger race‑window mellan `scrapedIds`‑snapshot och scrape­anrop.
 
-När watchdogen "kickar resolvern" skickar den `retryFailed: true`. I `resolve-domains-batch` rad 538–540 betyder det:
-```ts
-retryFailed ? allCompanies.filter(c => !c.domain && c.domain_status === "failed") : ...
-```
-→ Endast de 2 `failed`-företagen plockas upp. De 12 `unresolved` ignoreras varje gång, och de 2 `failed` försöker resolvern om och om igen utan resultat → 0 progress → 20 idle waves → auto-pause.
+## 4. Bättre observability inför stor skala
+- Lägg ut `firecrawl_calls` per‑bolag i `source_pages.meta_json` (eller en ny kolumn) så vi kan se "credits per kontakt" per körning i UI.
+- Lägg till KPI på job‑sidan: "unika sidor", "duplicerade scrapes" (om > 0 = bug).
+- Logga varje skip ("locked by other worker", "already scraped") så vi ser att lås­mekanismen funkar.
 
-Loggarna bekräftar det exakt: varje kick loggar `Domain resolution complete: 0 resolved, 2 failed. total:2` — bara 2 företag processas per kick.
+## 5. (Mindre) Marginalförbättringar i `scrape-emails`
+- Cacha HEAD‑probe‑resultat (`CONTACT_PATHS`) i `companies.meta_json.head_cache` så en omkörning inte upprepar HEAD-anrop (gratis men ändå nätverk).
+- Utöka sibling‑cache till att matcha även på `root domain` (idag exakt domän) — t.ex. `app.foo.se` och `foo.se`.
 
-Dessutom: Evida AB:s två "no domain found" är permanenta (företaget har ingen webbplats som matchar sökningarna). Att retrya dem för evigt är meningslöst — de borde markeras som färdigt-misslyckade så watchdogen slutar räkna dem som "pending".
+## 6. Verifiera mot CRMdata: Fintech innan storskalning
+Efter deploy:
+1. Rensa `source_pages`/`contacts`/`contact_people` för jobbet (men behåll company‑posterna och deras `domain`).
+2. Klicka Start.
+3. Förvänta: ~126 unika page‑scrapes (samma som tidigare unika), 0 dubbletter, ~191 personer, ~225 kontakter.
+4. Jämför `firecrawl_calls` mot baseline — målet är **≥ 60 % besparing**.
 
-## Plan
+## Filer som ändras
+- `supabase/functions/scrape-emails-batch/index.ts` — lås, singleton‑guard, dubbelcheck.
+- `supabase/functions/scrape-emails/index.ts` — släpp lås i finally, ev. HEAD‑cache + utökad sibling‑cache.
+- `src/components/jobDetail/...` — visa "unika sidor / duplicerade scrapes / credits per kontakt" i KPI‑bannern.
+- (Ev. migration) ny kolumn `companies.scrape_status` eller bara använda `meta_json`. Förslag: `meta_json` — ingen migration.
 
-### 1. Fixa watchdog-kick (huvudfixen)
-I `supabase/functions/scrape-emails-batch/index.ts`, ändra resolver-kicket så det hanterar **alla** företag utan domän (både `unresolved` och `failed`):
-```ts
-body: JSON.stringify({ jobId, retryFailed: true, includeUnresolved: true }),
-```
-Och i `resolve-domains-batch/index.ts` lägg till `includeUnresolved` i selection-läget:
-```ts
-const todo = reresolveAll ? allCompanies
-  : (retryFailed && includeUnresolved) ? allCompanies.filter(c => !c.domain)
-  : retryFailed ? allCompanies.filter(c => !c.domain && c.domain_status === "failed")
-  : allCompanies.filter(c => !c.domain);
-```
-Alternativ (enklare): bara skicka `{ jobId }` utan `retryFailed` så används default-läget (`!c.domain`), som plockar både unresolved och failed.
-→ Jag väljer det enklare alternativet.
-
-### 2. Markera permanent-misslyckade så de inte räknas som pending
-När en `failed` resolveas igen och fortfarande misslyckas N gånger (t.ex. 3), sätt en ny status `no_domain_found` (eller använd `meta_json.resolve_attempts >= 3`). Watchdogens `pendingResolution`-räkning i `scrape-emails-batch` (där den filtrerar `!company.domain && status !== "no_domain_found"`) ska då exkludera dem.
-
-Konkret:
-- Lägg till räknare `resolve_attempts` i `companies.meta_json` som ökas i `resolve-domains-batch` vid varje failed-utfall.
-- Vid `attempts >= 3` sätt `domain_status = 'no_domain_found'`.
-- Uppdatera scrape-emails-batch pendingResolution-filter att exkludera `no_domain_found` (och visa dem som "no domain found" precis som befintliga `failed` utan retry-möjlighet).
-
-### 3. Återstarta CRMdata:Fintech-jobbet
-Efter deploy: manuellt klicka **Start** på jobbet. `resume-job` återställer redan `failed → unresolved` (existerande kod), och med fix 1 plockar resolvern nu alla 14 företag. De 2 omöjliga går till `no_domain_found` efter 3 försök och jobbet kan slutföras med 72 av 74 scrapade.
-
-### Filer som ändras
-- `supabase/functions/scrape-emails-batch/index.ts` — fix watchdog-kick body, filter pendingResolution mot `no_domain_found`.
-- `supabase/functions/resolve-domains-batch/index.ts` — räkna `resolve_attempts`, sätt `no_domain_found` vid 3 misslyckanden.
-- (ingen UI-ändring nödvändig — "no domain found"-räknaren i banner finns redan)
-
-### Ingen automatik
-Inga jobb startas automatiskt. Du klickar Start på CRMdata:Fintech själv när fixen är deployad.
+## Inget körs automatiskt
+Inga jobb startas av planen. Du verifierar manuellt på CRMdata: Fintech efter deploy.
