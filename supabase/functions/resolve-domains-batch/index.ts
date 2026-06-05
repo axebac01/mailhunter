@@ -473,7 +473,7 @@ Deno.serve(async (req) => {
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const body = await req.json().catch(() => ({}));
-    const { companyIds, importId, jobId, retryFailed, reresolveAll } = body ?? {};
+    const { companyIds, importId, jobId, retryFailed, reresolveAll, includeUnresolved } = body ?? {};
 
     let ids: string[] = Array.isArray(companyIds) ? companyIds : [];
     if (importId) {
