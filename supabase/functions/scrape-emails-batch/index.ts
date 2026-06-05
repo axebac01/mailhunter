@@ -131,6 +131,7 @@ Deno.serve(async (req) => {
     if (importIds.length === 0) {
       await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level: "warn", message: "No imports linked to this job — nothing to scrape." });
       await supabase.from("crawl_jobs").update({ status: "completed", progress: 100 }).eq("id", jobId);
+      await stopHeartbeat();
       return new Response(JSON.stringify({ scraped: 0, total: 0 }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
