@@ -289,6 +289,7 @@ Deno.serve(async (req) => {
             : `Waiting on domain resolution: ${pendingResolution.length} of ${allCompanies.length} still pending. Re-checking in ${Math.round(REINVOKE_DELAY_MS / 1000)}s.`,
         });
         await refreshCounters(scrapedIds.size);
+        await stopHeartbeat();
         scheduleReinvoke(SUPABASE_URL, SERVICE_KEY, jobId);
         return new Response(JSON.stringify({ waiting: pendingResolution.length, scraped: scrapedIds.size, kickedResolver: kicked }), {
           status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -298,6 +299,7 @@ Deno.serve(async (req) => {
       await refreshCounters(scrapedIds.size);
       await supabase.from("crawl_jobs").update({ status: "completed", progress: 100 }).eq("id", jobId);
       await supabase.from("crawl_logs").insert({ crawl_job_id: jobId, level: "success", message: `Scrape complete: ${scrapedIds.size} companies processed in total.` });
+      await stopHeartbeat();
       return new Response(JSON.stringify({ scraped: scrapedIds.size, done: true }), {
         status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
