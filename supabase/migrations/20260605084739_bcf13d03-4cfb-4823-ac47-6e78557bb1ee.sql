@@ -1,0 +1,2 @@
+ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS scrape_lock_at timestamptz;
+CREATE INDEX IF NOT EXISTS companies_scrape_lock_at_idx ON public.companies(scrape_lock_at) WHERE scrape_lock_at IS NOT NULL;

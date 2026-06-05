@@ -25,6 +25,7 @@ export type Database = {
           industry: string | null
           name: string
           notes: string | null
+          scrape_lock_at: string | null
           source_url: string | null
           updated_at: string
           website: string | null
@@ -39,6 +40,7 @@ export type Database = {
           industry?: string | null
           name: string
           notes?: string | null
+          scrape_lock_at?: string | null
           source_url?: string | null
           updated_at?: string
           website?: string | null
@@ -53,6 +55,7 @@ export type Database = {
           industry?: string | null
           name?: string
           notes?: string | null
+          scrape_lock_at?: string | null
           source_url?: string | null
           updated_at?: string
           website?: string | null
