@@ -450,7 +450,7 @@ async function resolveOne(
       },
     });
   }
-  return { id, status: "failed" };
+  return { id, status: finalStatus as "failed" | "no_domain_found" };
 }
 
 async function runPool<T, R>(items: T[], worker: (i: T) => Promise<R>, n: number): Promise<R[]> {
