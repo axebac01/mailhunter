@@ -73,7 +73,7 @@ export default function People() {
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
         title="People"
-        description="Public people metadata only — names, roles, and departments. Personal email addresses appear in Contacts, not here."
+        description="Personer med namn, roll och mejl ihop. Företagskontakter (info@, telefon) ligger under Contacts."
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" disabled={t.selected.size === 0} onClick={() => setOutreachOpen(true)}>
@@ -111,24 +111,27 @@ export default function People() {
                 <TableHeader className="sticky top-0 bg-card z-10">
                   <TableRow>
                     <TableHead className="w-10"><Checkbox checked={t.allVisibleSelected} onCheckedChange={t.toggleAllVisible} /></TableHead>
-                    <TableHead>Full name</TableHead><TableHead>Role</TableHead><TableHead>Department</TableHead>
+                    <TableHead>Full name</TableHead><TableHead>Role</TableHead>
+                    <TableHead>Email</TableHead><TableHead>Phone</TableHead>
+                    <TableHead>Department</TableHead>
                     <TableHead>Company</TableHead><TableHead>Domain</TableHead>
                     <TableHead>Country</TableHead><TableHead>Industry</TableHead>
-                    <TableHead>Source</TableHead><TableHead>Found</TableHead><TableHead>Job</TableHead>
+                    <TableHead>Found</TableHead><TableHead>Job</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {t.visible.map((p) => (
-                    <TableRow key={p.id} data-state={t.selected.has(p.id) ? "selected" : undefined}>
+                    <TableRow key={p.id} data-state={t.selected.has(p.id) ? "selected" : undefined} className={!p.email ? "opacity-80" : undefined}>
                       <TableCell><Checkbox checked={t.selected.has(p.id)} onCheckedChange={() => t.toggleRow(p.id)} /></TableCell>
                       <TableCell className="font-medium">{p.fullName}</TableCell>
                       <TableCell className="text-sm">{p.roleTitle ?? "—"}</TableCell>
+                      <TableCell className="font-mono text-xs">{p.email ?? <span className="text-muted-foreground">—</span>}</TableCell>
+                      <TableCell className="font-mono text-xs">{p.phone ?? <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">{p.department ?? "—"}</TableCell>
                       <TableCell>{p.companyName}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{p.domain ?? "—"}</TableCell>
                       <TableCell className="text-sm">{p.country ?? "—"}</TableCell>
                       <TableCell className="text-sm">{p.industry ?? "—"}</TableCell>
-                      <TableCell className="text-muted-foreground text-xs truncate max-w-[160px]">{p.sourceUrl}</TableCell>
                       <TableCell className="text-muted-foreground text-sm">{fmtRelative(p.foundAt)}</TableCell>
                       <TableCell className="text-muted-foreground text-sm truncate max-w-[140px]">{p.jobName ?? "—"}</TableCell>
                     </TableRow>

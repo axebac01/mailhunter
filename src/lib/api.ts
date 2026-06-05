@@ -108,6 +108,9 @@ export interface PersonRow {
   fullName: string;
   roleTitle: string | null;
   department: string | null;
+  email: string | null;
+  emailConfidence: "extracted" | "matched_high" | "matched_low" | null;
+  phone: string | null;
   sourceUrl: string;
   foundAt: string;
   jobId: string | null;
@@ -269,6 +272,9 @@ type PersonJoined = {
   full_name: string;
   role_title: string | null;
   department: string | null;
+  email: string | null;
+  email_confidence: string | null;
+  phone: string | null;
   source_url: string;
   found_at: string;
   company_id: string;
@@ -288,6 +294,9 @@ const mapPerson = (r: PersonJoined): PersonRow => ({
   fullName: r.full_name,
   roleTitle: r.role_title,
   department: r.department,
+  email: r.email,
+  emailConfidence: (r.email_confidence as PersonRow["emailConfidence"]) ?? null,
+  phone: r.phone,
   sourceUrl: r.source_url,
   foundAt: r.found_at,
   jobId: r.crawl_job_id,
@@ -430,7 +439,7 @@ export const api = {
     const offset = opts.offset ?? 0;
     let q = supabase
       .from("contact_people")
-      .select("id, full_name, role_title, department, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
+      .select("id, full_name, role_title, department, email, email_confidence, phone, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
       .order("found_at", { ascending: false });
     if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
     if (opts.importId) q = q.eq("import_id", opts.importId);

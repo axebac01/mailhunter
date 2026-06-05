@@ -16,7 +16,9 @@ export const CONTACT_EXPORT_FIELDS = [
 export const PEOPLE_EXPORT_FIELDS = [
   "company_name", "website", "domain", "country", "industry",
   "first_name", "last_name", "full_name",
-  "role_title", "department", "source_url", "found_at",
+  "role_title", "department",
+  "email", "email_confidence", "phone",
+  "source_url", "found_at",
   "job_name", "import_status",
 ] as const;
 
@@ -57,6 +59,9 @@ export function projectPersonRow(p: PersonRow) {
     full_name: p.fullName,
     role_title: p.roleTitle ?? "",
     department: p.department ?? "",
+    email: p.email ?? "",
+    email_confidence: p.emailConfidence ?? "",
+    phone: p.phone ?? "",
     source_url: p.sourceUrl,
     found_at: p.foundAt,
     job_name: p.jobName ?? "",

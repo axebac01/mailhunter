@@ -98,18 +98,42 @@ Deno.serve(async (req) => {
       } else if (body.source_table === "contact_people") {
         const { data, error } = await supabase
           .from("contact_people")
-          .select("id, full_name, role_title, source_url, company_id, companies(name, website, domain)")
+          .select("id, full_name, role_title, email, phone, email_confidence, source_url, company_id, companies(name, website, domain)")
           .in("id", body.ids);
         if (error) return jsonResponse({ error: `contact_people query failed: ${error.message}` }, 500);
+
+        // Fetch fallback generic emails per company for people who lack a direct email
+        const companyIds = Array.from(new Set((data ?? []).map((p: any) => p.company_id)));
+        const genericByCompany = new Map<string, string>();
+        if (companyIds.length > 0) {
+          const { data: emails } = await supabase
+            .from("contacts")
+            .select("company_id, value, found_at")
+            .in("company_id", companyIds)
+            .eq("contact_type", "generic_email")
+            .order("found_at", { ascending: true });
+          for (const e of emails ?? []) {
+            if (!genericByCompany.has(e.company_id)) genericByCompany.set(e.company_id, e.value);
+          }
+        }
+
         leads = (data ?? []).map((p: any) => {
           const { first, last } = splitName(p.full_name);
+          const personEmail = p.email ?? null;
+          const fallback = !personEmail ? genericByCompany.get(p.company_id) ?? null : null;
+          const notes = fallback
+            ? `Using company generic email — no direct email found for ${p.full_name}`
+            : (p.email_confidence ? `Email source: ${p.email_confidence}` : undefined);
           return {
             full_name: p.full_name,
             first_name: first,
             last_name: last,
             role: p.role_title ?? undefined,
+            email: personEmail ?? fallback ?? undefined,
+            phone: p.phone ?? undefined,
             company: p.companies?.name,
             website: p.companies?.website ?? undefined,
+            notes,
           };
         });
       } else {
