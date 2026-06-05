@@ -1,65 +1,57 @@
+# Plan: Alltid extrahera C-level-personer
+
 ## Mål
 
-Maximera **antal företag med ≥1 kontaktuppgift** per Firecrawl-credit. Vi accepterar att vi tappar djupet (färre personer/företag) i utbyte mot bredd (fler företag täckta) och lägre kostnad.
+För varje skrapat företag: hämta namn + roll för ledningen (VD, CFO, CTO, CMO, COO, ordförande, grundare). Coverage-first behålls för kontaktuppgifter — men Tier 2 körs nu alltid på företagets egna sidor.
 
-## Nuvarande beteende (scrape-emails)
+## Förändringar
 
-- **Tier 1** (1 credit): scrape kontaktsidan. Hämtar mejl/telefon/formulär.
-- **Tier 2** (≈5 credits + 1 LLM): scrape ledning/team-sida med JSON-extract för personer — körs alltid om vi inte har person-mail, även om Tier 1 hittat generic@ + telefon.
-- **Tier 3** (≈2 credits): map + scrape fallback om 0 mejl OCH 0 personer.
+### 1. `supabase/functions/scrape-emails/index.ts` — Tier 2 alltid på
 
-Idag drar Tier 2 in ~5 extra credits per företag bara för att leta efter namn när vi redan har kontaktväg. Det är huvudboven.
+- Ta bort `needsTier2`-gaten som infördes i coverage-first. Tier 2 körs på **varje** företag som har en domän.
+- Bygg om sidlistan vi letar på: nuvarande "om/team/ledning"-discovery utökas med svenska/engelska varianter: `ledning`, `management`, `styrelse`, `board`, `leadership`, `team`, `om-oss`, `about`, `medarbetare`, `executive`, `who-we-are`. Använd Firecrawl `map` med `search` om sidor inte hittas via Tier 1-länkar.
+- Cap: max **2** sidor per företag i Tier 2 (en team-sida + en ledning/styrelse-sida räcker oftast). Skydd mot 5-creditsexplosion.
 
-## Föreslagen ändring — "Coverage-first"-läge
+### 2. LLM-prompt — fokus på ledning
 
-### 1. Definiera "company is reached"
+Uppdatera JSON-extract-schemat i scrape-emails:
 
-Ett företag räknas som täckt så snart Tier 1 producerat **minst en** av: generic_email, person_email, phone, contact_form.
+```
+{ people: [{ full_name, role_title, department?, email? }] }
+```
 
-### 2. Skippa Tier 2 om företaget redan är täckt
+Prompten instrueras explicit:
+- Behåll **endast** personer vars titel matchar C-level/ledning-mönster (regex på serverside efter LLM-svar):
+  `/(VD|CEO|CFO|CTO|CMO|COO|CIO|CPO|CRO|CCO|chef|head of|director|ordförande|chair|founder|grundare|partner|owner|ägare|managing|VP|vice\s*president)/i`
+- Allt annat (sales rep, developer, support, etc.) filtreras bort innan insert i `contact_people`.
 
-Idag: `needsTier2 = !hasPersonMail && opt.personNames`
-Nytt: `needsTier2 = (acc.emails.size === 0 && acc.phones.size === 0 && acc.forms.size === 0) && opt.personNames`
+### 3. Persistens
 
-Dvs Tier 2 körs **bara** när Tier 1 inte gav någon kontaktväg alls — då är ledning/team-sidan vår sista chans att hitta en person/mejl innan Tier 3.
+`contact_people` har redan `full_name`, `role_title`, `department`, `source_url`, `company_id`, `job_id`. Inga schemaändringar.
 
-### 3. Skippa pattern-synthesis-loop när vi är täckta
+Lägg till dedupe per `(company_id, lower(full_name))` så vi inte får dubbletter när team-sida + ledning-sida överlappar.
 
-Pattern-synthesis (rader 522–547) genererar `first.last@domain` för varje rankad person. Den drar inga credits men skapar brus. Kör bara om företaget annars saknar person-mail. (Behåller logiken men gatas av `acc.emails.size === 0` eller minst en person utan mail + sample finns — funktionellt samma som idag men cap till **max 1 syntetiserad mail per företag** istället för alla.)
+### 4. UI
 
-### 4. Sänk HARD_CAP från 5 → 3
+`JobPeopleTab` och `People`-sidan visar redan namn/roll/dep/företag — fungerar direkt. Inga UI-ändringar krävs.
 
-Med Tier 2 normalt avstängd blir realistiskt max:
-- Tier 1: 1 credit (+1 om JS-retry)
-- Tier 3: 2 credits (map + 1 scrape) endast om Tier 1 helt tom
+(Valfritt senare: lägg till en KPI-ruta "Företag med ≥1 person" i jobbdetaljen — säg till om du vill ha det.)
 
-Sätt `HARD_CAP = 3`. Skyddsnät mot oavsiktliga loopar.
+### 5. Förväntad kostnad
 
-### 5. UI-flagga (valfri, default på)
+Tier 1 (1 credit) + Tier 2 (1–2 credits map + 1–2 scrapes med extract = 3–5 credits + 1 LLM) ≈ **4–6 credits/företag** istället för dagens ~1. För ett 70-företagsjobb: ~300–400 credits istället för ~100. Det är priset för personer.
 
-Lägg till `coverage_first_mode` på `crawl_jobs` (boolean, default true). I `CreateJob`-formuläret en checkbox: *"Coverage-first: prioritera bredd före djup (1 kontakt per företag, lägre credits)"*. När av → gammalt beteende (Tier 2 alltid).
-
-Om du vill hålla det enkelt kan vi hoppa flaggan och bara byta default. Säg till.
-
-### 6. Förväntad effekt på CRMdata:Fintech
-
-Baseline: ~150–200 credits, 225 contacts, 191 people för 72 företag (~2.5 credits/företag).
-Efter ändring: uppskattat ~80–110 credits (~1.2/företag), färre personer (Tier 2 körs bara på företag utan kontaktsida) men samma eller bättre **företagstäckning** (Tier 3 oförändrad som sista räddning).
-
-## Filer som ändras
-
-- `supabase/functions/scrape-emails/index.ts` — Tier 2-gate, HARD_CAP, ev. läs `coverage_first_mode` från jobbet.
-- (valfritt) migration: lägg till `coverage_first_mode boolean default true` på `crawl_jobs`.
-- (valfritt) `src/pages/CreateJob.tsx` + `src/lib/api.ts` — UI-flagga.
+`HARD_CAP` höjs tillbaka från 3 → 6.
 
 ## Verifiering
 
-Kör om CRMdata:Fintech (rensa source_pages/contacts/contact_people för jobbet först) och jämför:
-- antal företag med ≥1 contact (mål: ≥ baseline)
-- total `firecrawl_calls` (mål: ≥40 % lägre)
-- antal personer (förväntat lägre — det är trade-offen)
+Kör om `CRMdata: Finansiell leasing` (cleara source_pages/contacts/contact_people för jobbet först). Mät:
+- Antal företag med ≥1 person (mål: ≥60 %)
+- Andel personer med C-level-titel (mål: 100 % efter filter)
+- `firecrawl_calls` (förväntat ~80–110 för 16 företag)
 
-## Beslut jag behöver
+## Filer som ändras
 
-1. Vill du ha UI-flagga eller bara byta default till coverage-first för alla jobb?
-2. Ska Tier 2 vara helt avstängd när Tier 1 ger kontakt, eller behållas men med striktare cap (t.ex. bara om kontaktsidan saknar mejl)?
+- `supabase/functions/scrape-emails/index.ts` — Tier 2-gate borttagen, utökad sid-discovery, LLM-prompt + roll-filter, dedupe, HARD_CAP=6.
+
+Inga DB-migrationer. Ingen UI-kod ändras.
