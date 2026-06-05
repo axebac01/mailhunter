@@ -411,9 +411,12 @@ Deno.serve(async (req) => {
       const c = classifyEmail(e); return c === "person_high" || c === "person_low";
     });
 
-    // ──── Tier 2: leadership/team page with JSON-extract (only if no person mail yet) ────
-    // Skip if we already have a person mail. Run if only generic@ (we still want names).
-    const needsTier2 = !hasPersonMail && opt.personNames;
+    // ──── Tier 2: leadership/team page with JSON-extract ────
+    // Coverage-first: skip Tier 2 if Tier 1 already produced ANY contact path
+    // (email, phone, or contact form). Only spend the ~5 credits + LLM call when
+    // we have nothing — then a team page is our best shot at a name/mail.
+    const tier1Reached = acc.emails.size > 0 || acc.phones.size > 0 || acc.forms.size > 0;
+    const needsTier2 = !tier1Reached && opt.personNames;
     if (needsTier2 && remaining() > 0 && counter.llmCalls < 1) {
       const leadershipCandidates = LEADERSHIP_PATHS.map((p) => `https://${domain}${p}`);
       const leadershipUrl = await firstReachable(leadershipCandidates);
