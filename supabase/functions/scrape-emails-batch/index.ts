@@ -217,7 +217,7 @@ Deno.serve(async (req) => {
             await fetch(`${SUPABASE_URL}/functions/v1/resolve-domains-batch`, {
               method: "POST",
               headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ jobId, retryFailed: true }),
+              body: JSON.stringify({ jobId, retryFailed: true, includeUnresolved: true }),
             });
             kicked = true;
           } catch (_) { /* best effort */ }
