@@ -86,6 +86,16 @@ Deno.serve(async (req) => {
         resetCount += (updated ?? []).length;
       }
 
+      // Clear any stale per-company scrape locks for this job's companies
+      for (let i = 0; i < unique.length; i += CHUNK) {
+        const slice = unique.slice(i, i + CHUNK);
+        await supabase
+          .from("companies")
+          .update({ scrape_lock_at: null })
+          .in("id", slice)
+          .not("scrape_lock_at", "is", null);
+      }
+
       // Count companies still without domain (pending resolution)
       for (let i = 0; i < unique.length; i += CHUNK) {
         const slice = unique.slice(i, i + CHUNK);
@@ -100,7 +110,7 @@ Deno.serve(async (req) => {
 
     await supabase.from("crawl_logs").insert({
       crawl_job_id: jobId, level: "info",
-      message: `Resume: reset ${resetCount} failed domains, ${pendingCount} pending resolution. Starting resolver + scraper.`,
+      message: `Resume: reset ${resetCount} failed domains, ${pendingCount} pending resolution. Cleared stale worker locks. Starting resolver + scraper.`,
       meta_json: { event: "job_resumed", reset: resetCount, pending: pendingCount },
     });
 
