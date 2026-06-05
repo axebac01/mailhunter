@@ -1,11 +1,11 @@
 // Tiered, credit-frugal email + decision-maker extraction for a single company.
-// Goals: minimize Firecrawl spend, maximize % of companies where we reach SOMEONE.
+// Goals: maximize % of companies where we reach SOMEONE (Tier 1) AND get C-level names+roles (Tier 2).
 // Pipeline:
 //   0. Domain-cache: if another company with same root domain already has contacts → copy & exit (0 credits)
-//   1. Tier 1: HEAD-probe canonical contact paths → scrape FIRST one that exists (1 credit). Regex emails/phones/forms.
-//   2. Tier 2 (skip if Tier 1 found a generic@ or person mail): HEAD-probe leadership/team paths → scrape first hit with JSON-extract for people (≈5 credits, max 1 LLM/company). Rank decision-makers first.
-//   3. Tier 3 (only if 0 emails AND 0 people): map(limit 30) + scrape homepage (≈2 credits).
-// Hard cap: 5 Firecrawl calls + 1 LLM-extract per company. Count tracked on crawl_jobs.firecrawl_calls.
+//   1. Tier 1: HEAD-probe canonical contact paths → scrape first hit (1 credit). Regex emails/phones/forms.
+//   2. Tier 2 (ALWAYS when personNames=true): HEAD-probe leadership/team paths → scrape up to 2 with JSON-extract for C-level people (≈2–5 credits, max 2 LLM/company). Server-side filter keeps only roles matching the decision-maker regex.
+//   3. Tier 3 (only if 0 emails AND 0 people): map(limit 30) + scrape best link (≈2 credits).
+// Hard cap: 6 Firecrawl calls + 2 LLM-extracts per company. Count tracked on crawl_jobs.firecrawl_calls.
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 
@@ -385,7 +385,7 @@ Deno.serve(async (req) => {
       });
     };
 
-    const HARD_CAP = 3;
+    const HARD_CAP = 6;
     const remaining = () => HARD_CAP - counter.calls;
 
     // ──── Tier 1: contact page ────
@@ -411,21 +411,36 @@ Deno.serve(async (req) => {
       const c = classifyEmail(e); return c === "person_high" || c === "person_low";
     });
 
-    // ──── Tier 2: leadership/team page with JSON-extract ────
-    // Coverage-first: skip Tier 2 if Tier 1 already produced ANY contact path
-    // (email, phone, or contact form). Only spend the ~5 credits + LLM call when
-    // we have nothing — then a team page is our best shot at a name/mail.
-    const tier1Reached = acc.emails.size > 0 || acc.phones.size > 0 || acc.forms.size > 0;
-    const needsTier2 = !tier1Reached && opt.personNames;
-    if (needsTier2 && remaining() > 0 && counter.llmCalls < 1) {
+    // ──── Tier 2: leadership/team pages with JSON-extract (always when personNames) ────
+    // Run on every company that opted in to personNames — this is how we get names + roles.
+    // Cap: up to 2 distinct leadership pages per company (e.g. /ledning + /styrelse).
+    if (opt.personNames && remaining() > 0 && counter.llmCalls < 2) {
       const leadershipCandidates = LEADERSHIP_PATHS.map((p) => `https://${domain}${p}`);
-      const leadershipUrl = await firstReachable(leadershipCandidates);
-      if (leadershipUrl) {
-        const teamPrompt = "Extract decision-makers (CEO/VD, founders, owners, partners, board chair, C-level, managing director) from this page. Return JSON: { people: [{ full_name, role_title, department, email }] }. Prioritize executives over junior staff. Only include real people with verifiable names.";
-        const r = await firecrawlScrape(leadershipUrl, apiKey, counter, { jsonPrompt: teamPrompt });
-        const ex = extractFromPage({ url: leadershipUrl, ...r }, root);
+      const probes = await Promise.all(leadershipCandidates.map(async (u) => ({ u, ok: await headOk(u) })));
+      const reachable = probes.filter((p) => p.ok).map((p) => p.u);
+      // Dedupe by pathname; pick at most 2 distinct pages
+      const picked: string[] = [];
+      const seenPaths = new Set<string>();
+      for (const u of reachable) {
+        try {
+          const path = new URL(u).pathname.toLowerCase().replace(/\/$/, "");
+          if (seenPaths.has(path)) continue;
+          seenPaths.add(path);
+          picked.push(u);
+          if (picked.length >= 2) break;
+        } catch { /* ignore */ }
+      }
+
+      const teamPrompt = "Extract ONLY senior executives and board members from this page (CEO/VD, CFO, COO, CTO, CMO, CIO, CRO, CCO, President, Managing Director, Chairman/Ordförande, Founder/Grundare, Owner/Ägare, Partner, Head of <department>, Director, VP). Skip junior staff, sales reps, support, developers, consultants without titles. Return JSON: { people: [{ full_name, role_title, department, email }] }. Only include real people whose role_title clearly matches a leadership / C-level / board position.";
+
+      for (const url of picked) {
+        if (remaining() <= 0 || counter.llmCalls >= 2) break;
+        const r = await firecrawlScrape(url, apiKey, counter, { jsonPrompt: teamPrompt });
+        const ex = extractFromPage({ url, ...r }, root);
+        // Server-side filter: only keep people whose role_title matches the decision-maker regex.
+        ex.people = ex.people.filter((p) => isDecisionMaker(p.role_title));
         mergeExtract(acc, ex);
-        await recordPage(leadershipUrl, ex);
+        await recordPage(url, ex);
       }
     }
 
