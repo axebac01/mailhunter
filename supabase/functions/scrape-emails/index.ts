@@ -549,14 +549,9 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Update job-level credit counter
+    // Update job-level credit counter atomically (avoids parallel races)
     if (jobId && counter.calls > 0) {
-      // Best-effort atomic increment via raw UPDATE
-      await supabase.rpc("exec_sql" as any, {}).catch(() => {});
-      // Fallback: read-modify-write
-      const { data: jr } = await supabase.from("crawl_jobs").select("firecrawl_calls").eq("id", jobId).maybeSingle();
-      const cur = (jr as any)?.firecrawl_calls ?? 0;
-      await supabase.from("crawl_jobs").update({ firecrawl_calls: cur + counter.calls }).eq("id", jobId);
+      await supabase.rpc("increment_firecrawl_calls", { job_id: jobId, delta: counter.calls });
     }
 
     // Timeline
