@@ -385,7 +385,7 @@ Deno.serve(async (req) => {
       });
     };
 
-    const HARD_CAP = 5;
+    const HARD_CAP = 3;
     const remaining = () => HARD_CAP - counter.calls;
 
     // ──── Tier 1: contact page ────
