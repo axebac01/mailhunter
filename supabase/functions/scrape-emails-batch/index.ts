@@ -258,6 +258,7 @@ Deno.serve(async (req) => {
             crawl_job_id: jobId, level: "error",
             message: `Auto-paused: no progress for ${STALL_WAVE_LIMIT} waves (~${Math.round(STALL_WAVE_LIMIT * REINVOKE_DELAY_MS / 1000)}s). ${pendingResolution.length} domains still pending. Click Start to retry.`,
           });
+          await stopHeartbeat();
           return new Response(JSON.stringify({ stalled: true, pending: pendingResolution.length }), {
             status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
