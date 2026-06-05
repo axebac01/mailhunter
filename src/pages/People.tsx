@@ -73,7 +73,7 @@ export default function People() {
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
         title="People"
-        description="Public people metadata only — names, roles, and departments. Personal email addresses appear in Contacts, not here."
+        description="Personer med namn, roll och mejl ihop. Företagskontakter (info@, telefon) ligger under Contacts."
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" disabled={t.selected.size === 0} onClick={() => setOutreachOpen(true)}>
