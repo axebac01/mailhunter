@@ -75,6 +75,56 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── Singleton-guard: prevent multiple parallel batch workers for the same job ──
+    // Each running worker writes a heartbeat (ISO timestamp) into meta_json.worker_heartbeat.
+    // If a fresh heartbeat (<30s old) exists, another worker is already processing this job — exit.
+    const WORKER_STALE_MS = 30_000;
+    const HEARTBEAT_INTERVAL_MS = 10_000;
+    const workerId = crypto.randomUUID();
+    const existingMeta = (job.meta_json as Record<string, unknown> | null) ?? {};
+    const existingHb = existingMeta.worker_heartbeat ? Date.parse(String(existingMeta.worker_heartbeat)) : 0;
+    const existingWorker = existingMeta.worker_id ? String(existingMeta.worker_id) : null;
+    if (existingHb && Date.now() - existingHb < WORKER_STALE_MS && existingWorker !== workerId) {
+      await supabase.from("crawl_logs").insert({
+        crawl_job_id: jobId, level: "info",
+        message: `Another batch worker is already active (heartbeat ${Math.round((Date.now() - existingHb) / 1000)}s ago) — exiting to avoid duplicate scrapes.`,
+      });
+      return new Response(JSON.stringify({ skipped: true, reason: "worker_active" }), {
+        status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    // Claim the worker slot
+    await supabase.from("crawl_jobs").update({
+      meta_json: { ...existingMeta, worker_id: workerId, worker_heartbeat: new Date().toISOString() },
+    }).eq("id", jobId);
+
+    // Keep-alive heartbeat loop, cleared when work finishes
+    let heartbeatTimer: number | undefined;
+    const startHeartbeat = () => {
+      heartbeatTimer = setInterval(async () => {
+        const { data: hb } = await supabase.from("crawl_jobs").select("meta_json").eq("id", jobId).maybeSingle();
+        const m = (hb?.meta_json as Record<string, unknown> | null) ?? {};
+        // Only refresh if we still own the slot
+        if (m.worker_id === workerId) {
+          await supabase.from("crawl_jobs").update({
+            meta_json: { ...m, worker_heartbeat: new Date().toISOString() },
+          }).eq("id", jobId);
+        } else if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+        }
+      }, HEARTBEAT_INTERVAL_MS) as unknown as number;
+    };
+    const stopHeartbeat = async () => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      // Release the slot
+      const { data: hb } = await supabase.from("crawl_jobs").select("meta_json").eq("id", jobId).maybeSingle();
+      const m = (hb?.meta_json as Record<string, unknown> | null) ?? {};
+      if (m.worker_id === workerId) {
+        const { worker_id: _wid, worker_heartbeat: _whb, ...rest } = m;
+        await supabase.from("crawl_jobs").update({ meta_json: rest }).eq("id", jobId);
+      }
+    };
+
     // Companies linked via this job's imports
     const { data: imports } = await supabase.from("imports").select("id").eq("crawl_job_id", jobId);
     const importIds = (imports ?? []).map((i: any) => i.id);
