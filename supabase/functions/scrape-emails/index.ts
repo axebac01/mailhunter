@@ -518,23 +518,22 @@ Deno.serve(async (req) => {
     }
 
     // ──── Persist ────
+    // People-first model:
+    //   • generic emails + phones + forms  → contacts (company-level fallback)
+    //   • person_high/person_low emails    → matched onto contact_people.email (skip contacts)
+    //   • unmatched person_high            → synthesize a new contact_people row
     let inserted = { contacts: 0, people: 0, person_emails: 0, synthesized: 0 };
 
-    if (opt.genericEmails || opt.personEmails) {
+    // Generic emails → contacts
+    if (opt.genericEmails) {
       for (const e of acc.emails) {
-        const cls = classifyEmail(e);
-        const isPerson = cls === "person_high" || cls === "person_low";
-        if (isPerson && !opt.personEmails) continue;
-        if (!isPerson && !opt.genericEmails) continue;
+        if (classifyEmail(e) !== "generic") continue;
         const { error } = await supabase.from("contacts").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
-          contact_type: isPerson ? "person_email" : "generic_email",
+          contact_type: "generic_email",
           value: e, source_url: acc.emailSources.get(e) ?? `https://${domain}`,
         });
-        if (!error) {
-          inserted.contacts++;
-          if (isPerson) inserted.person_emails++;
-        }
+        if (!error) inserted.contacts++;
       }
     }
     if (opt.phones) {
@@ -565,57 +564,69 @@ Deno.serve(async (req) => {
     });
     const ranked = rankPeople(dedup);
 
+    // Match-pass: link extracted person emails to people by name
+    const personEmails = Array.from(acc.emails).filter((e) => {
+      const c = classifyEmail(e);
+      return (c === "person_high" || c === "person_low") && rootDomain(emailHost(e)) === root;
+    });
+    const consumedEmails = new Set<string>();
+    for (const p of ranked) {
+      if (p.email) continue; // LLM already linked it (confidence=extracted)
+      // Prefer high-conf match
+      let best: { email: string; conf: "high"|"low" } | null = null;
+      for (const e of personEmails) {
+        if (consumedEmails.has(e)) continue;
+        const score = emailMatchesName(e, p.full_name);
+        if (score === "high") { best = { email: e, conf: "high" }; break; }
+        if (score === "low" && !best) best = { email: e, conf: "low" };
+      }
+      if (best) {
+        p.email = best.email;
+        (p as any)._email_confidence = best.conf === "high" ? "matched_high" : "matched_low";
+        consumedEmails.add(best.email);
+      }
+    }
+
     if (opt.personNames) {
       for (const p of ranked) {
         const decision = isDecisionMaker(p.role_title);
+        const conf = (p as any)._email_confidence
+          ?? (p.email ? "extracted" : null);
         const { error } = await supabase.from("contact_people").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
           full_name: p.full_name, role_title: p.role_title ?? null, department: p.department ?? null,
           source_url: p.source_url, is_decision_maker: decision,
+          email: p.email ?? null,
+          email_confidence: conf,
         });
-        if (!error) inserted.people++;
-
-        if (p.email && opt.personEmails) {
-          const host = emailHost(p.email);
-          if (host && rootDomain(host) === root && !acc.emails.has(p.email)) {
-            const { error: e2 } = await supabase.from("contacts").insert({
-              company_id: companyId, crawl_job_id: jobId ?? null,
-              contact_type: "person_email", value: p.email, source_url: p.source_url,
-              is_publicly_listed: true,
-            });
-            if (!e2) { inserted.contacts++; inserted.person_emails++; acc.emails.add(p.email); }
-          }
+        if (!error) {
+          inserted.people++;
+          if (p.email) inserted.person_emails++;
         }
       }
     }
 
-    // Pattern-based synthesis: prioritize decision-makers
-    if (opt.personEmails && opt.personNames && ranked.length > 0) {
-      const sample = Array.from(acc.emails).find((e) => {
-        const local = e.split("@")[0]?.toLowerCase() ?? "";
-        return /^[a-z]+\.[a-z]+$/.test(local) && rootDomain(emailHost(e)) === root;
-      });
-      if (sample) {
-        const peopleNoEmail = ranked.filter((p) => !p.email).slice(0, 1);
-        for (const p of peopleNoEmail) {
-          const tokens = p.full_name.toLowerCase()
-            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-            .replace(/[^a-z\s-]/g, "").split(/\s+/).filter(Boolean);
-          if (tokens.length < 2) continue;
-          const first = tokens[0];
-          const last = tokens[tokens.length - 1];
-          if (first.length < 2 || last.length < 2) continue;
-          const synth = `${first}.${last}@${root}`;
-          if (acc.emails.has(synth)) continue;
-          const { error } = await supabase.from("contacts").insert({
-            company_id: companyId, crawl_job_id: jobId ?? null,
-            contact_type: "person_email", value: synth, source_url: p.source_url,
-            is_publicly_listed: false,
-          });
-          if (!error) { inserted.synthesized++; inserted.contacts++; acc.emails.add(synth); }
-        }
+    // Synthesize person rows for unmatched person_high emails (no name on page, but we have the address)
+    if (opt.personNames) {
+      for (const e of personEmails) {
+        if (consumedEmails.has(e)) continue;
+        if (classifyEmail(e) !== "person_high") continue;
+        const lt = emailLocalTokens(e);
+        if (!lt) continue;
+        const fullName = titleCaseName(lt.first, lt.last);
+        const { error } = await supabase.from("contact_people").insert({
+          company_id: companyId, crawl_job_id: jobId ?? null,
+          full_name: fullName, role_title: null, department: null,
+          source_url: acc.emailSources.get(e) ?? `https://${domain}`,
+          is_decision_maker: false,
+          email: e,
+          email_confidence: "matched_high",
+        });
+        if (!error) { inserted.people++; inserted.person_emails++; inserted.synthesized++; }
       }
     }
+
+
 
     // Update job-level credit counter atomically (avoids parallel races)
     if (jobId && counter.calls > 0) {
