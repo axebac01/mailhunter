@@ -108,6 +108,9 @@ export interface PersonRow {
   fullName: string;
   roleTitle: string | null;
   department: string | null;
+  email: string | null;
+  emailConfidence: "extracted" | "matched_high" | "matched_low" | null;
+  phone: string | null;
   sourceUrl: string;
   foundAt: string;
   jobId: string | null;
