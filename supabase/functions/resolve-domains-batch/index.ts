@@ -535,9 +535,11 @@ Deno.serve(async (req) => {
     // Selection mode
     const todo = reresolveAll
       ? allCompanies
+      : (retryFailed && includeUnresolved)
+      ? allCompanies.filter((c: any) => !c.domain && c.domain_status !== "no_domain_found")
       : retryFailed
       ? allCompanies.filter((c: any) => !c.domain && c.domain_status === "failed")
-      : allCompanies.filter((c: any) => !c.domain);
+      : allCompanies.filter((c: any) => !c.domain && c.domain_status !== "no_domain_found");
 
     // Time-budget the run so we always reply well under the 150s edge timeout.
     // Process a slice this invocation; if more remain, fire-and-forget a
