@@ -288,7 +288,56 @@ function rankPeople(people: PageExtract["people"]): PageExtract["people"] {
   });
 }
 
+// ─────────────────────────── name<->email matching ───────────────────────────
+
+function normalizeNameToken(s: string): string {
+  return s.toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z]/g, "");
+}
+
+function nameTokens(fullName: string): string[] {
+  return fullName.split(/\s+/).map(normalizeNameToken).filter((t) => t.length >= 2);
+}
+
+// Try to derive [first, last] candidate tokens from an email local-part.
+function emailLocalTokens(email: string): { first: string; last: string } | null {
+  const local = email.split("@")[0]?.toLowerCase() ?? "";
+  // firstname.lastname / firstname_lastname / firstname-lastname
+  const m = local.match(/^([a-z]{2,})[._-]([a-z]{2,})$/);
+  if (m) return { first: m[1], last: m[2] };
+  return null;
+}
+
+// Score how well an email matches a person's name. >0 = match.
+function emailMatchesName(email: string, fullName: string): "high" | "low" | null {
+  const tokens = nameTokens(fullName);
+  if (tokens.length < 1) return null;
+  const first = tokens[0];
+  const last = tokens[tokens.length - 1];
+  const lt = emailLocalTokens(email);
+  if (lt) {
+    if (lt.first === first && lt.last === last) return "high";
+    if ((lt.first === first && lt.last.length >= 2 && last.startsWith(lt.last)) ||
+        (lt.last === last && lt.first.length >= 2 && first.startsWith(lt.first))) return "high";
+    return null;
+  }
+  // single-token local: firstname or flast / lastf / fl
+  const local = email.split("@")[0]?.toLowerCase() ?? "";
+  if (local === first) return "low";
+  if (local === `${first[0]}${last}` || local === `${first}${last[0]}`) return "low";
+  return null;
+}
+
+// Title-case a derived name like "anna.svensson" → "Anna Svensson"
+function titleCaseName(first: string, last: string): string {
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  return `${cap(first)} ${cap(last)}`;
+}
+
 // ─────────────────────────── handler ─────────────────────────────────────────
+
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
