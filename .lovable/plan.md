@@ -1,57 +1,81 @@
-# Plan: Alltid extrahera C-level-personer
+# Plan: Personer + kontakter i samma rad
 
-## Mål
+## Problem
 
-För varje skrapat företag: hämta namn + roll för ledningen (VD, CFO, CTO, CMO, COO, ordförande, grundare). Coverage-first behålls för kontaktuppgifter — men Tier 2 körs nu alltid på företagets egna sidor.
+Idag är `contact_people` (namn/roll) och `contacts` (mejl/telefon) två separata tabeller. För Outreach behöver vi en **person-centrerad** vy där varje rad har namn + roll + mejl + telefon ihop. Generic-mejlen (info@) finns kvar som fallback för företag utan namngiven person.
 
-## Förändringar
+## Datamodell
 
-### 1. `supabase/functions/scrape-emails/index.ts` — Tier 2 alltid på
+Lägg till på `contact_people`:
+- `email text` — personens mejl
+- `email_confidence text` — `extracted` (LLM hittade ihop med namnet), `matched_high` (matchat via heuristik: `fornamn.efternamn@domän`), `matched_low` (svagare match), `null` (ingen mejl hittad)
+- `phone text` — direkt-tel om vi hittar det
 
-- Ta bort `needsTier2`-gaten som infördes i coverage-first. Tier 2 körs på **varje** företag som har en domän.
-- Bygg om sidlistan vi letar på: nuvarande "om/team/ledning"-discovery utökas med svenska/engelska varianter: `ledning`, `management`, `styrelse`, `board`, `leadership`, `team`, `om-oss`, `about`, `medarbetare`, `executive`, `who-we-are`. Använd Firecrawl `map` med `search` om sidor inte hittas via Tier 1-länkar.
-- Cap: max **2** sidor per företag i Tier 2 (en team-sida + en ledning/styrelse-sida räcker oftast). Skydd mot 5-creditsexplosion.
+Index på `(company_id, lower(email))` för dedupe.
 
-### 2. LLM-prompt — fokus på ledning
+## Extraktion (`scrape-emails/index.ts`)
 
-Uppdatera JSON-extract-schemat i scrape-emails:
+1. **Tier 2 LLM** returnerar redan `{full_name, role_title, department, email?}` — utöka prompten: be modellen explicit koppla mejl/tel som står bredvid namnet på sidan. Spara direkt på personen.
+2. **Efter Tier 1 + Tier 2**: kör en match-pass på server:
+   - För varje extraherad mejl med `class=person_high` (`fornamn.efternamn@domän`): plocka ut förnamn + efternamn ur local-part och försök matcha mot `contact_people.full_name` för samma company.
+     - Exakt match → fyll i `email` om tomt, sätt `email_confidence='matched_high'`.
+     - Ingen match men person_high → skapa en ny person-rad med `full_name` härlett från mejlet (`Förnamn Efternamn`), `role_title=null`, `email_confidence='matched_high'`. Dessa visas som "okänd roll" i UI.
+   - `person_low` (bara förnamn) → matcha bara om unikt förnamn bland företagets personer, annars lämna kvar som löst kontakt.
+3. **Generic-mejl** (info@, sales@) → stannar i `contacts` som idag, används som företags-fallback.
 
+## UI
+
+### Ny primär vy: `JobPeopleTab` (befintlig flik döps om till "Kontakter")
+Kolumner: **Namn · Roll · Mejl · Telefon · Företag · Källa · Hittad**.
+Rader utan mejl visas grålt (kan ändå exporteras med `[generic]` mejl som fallback).
+
+### `JobContactsTab` → "Företagskontakter" (fallback)
+Visa bara `generic_email` + telefon — alltså företagsnivå utan namn.
+
+### `Pages/People.tsx` + `Pages/Contacts.tsx`
+Samma uppdelning globalt.
+
+## Export → Outreach
+
+`projectPersonRow` i `src/lib/exporters.ts` får nya fält:
+- `email` (personens mejl, eller företagets generic om tomt och `include_generic_fallback=true`)
+- `email_source` (`person` / `generic_fallback`)
+- `phone`
+
+`send-to-outreach`-funktionen byggs om så att `contact_people` blir huvudkällan:
+- Skicka person med `email`, `first_name`, `last_name`, `role`, `company`.
+- Om en person saknar mejl och företaget har ett generic → skicka med generic som mejl, märk `notes: "generic email"`.
+- `contacts`-källan finns kvar för rena företagsmejlsutskick.
+
+## Migration
+
+```sql
+ALTER TABLE public.contact_people
+  ADD COLUMN email text,
+  ADD COLUMN email_confidence text CHECK (email_confidence IN ('extracted','matched_high','matched_low')),
+  ADD COLUMN phone text;
+
+CREATE INDEX idx_contact_people_email
+  ON public.contact_people (company_id, lower(email))
+  WHERE email IS NOT NULL;
 ```
-{ people: [{ full_name, role_title, department?, email? }] }
-```
 
-Prompten instrueras explicit:
-- Behåll **endast** personer vars titel matchar C-level/ledning-mönster (regex på serverside efter LLM-svar):
-  `/(VD|CEO|CFO|CTO|CMO|COO|CIO|CPO|CRO|CCO|chef|head of|director|ordförande|chair|founder|grundare|partner|owner|ägare|managing|VP|vice\s*president)/i`
-- Allt annat (sales rep, developer, support, etc.) filtreras bort innan insert i `contact_people`.
-
-### 3. Persistens
-
-`contact_people` har redan `full_name`, `role_title`, `department`, `source_url`, `company_id`, `job_id`. Inga schemaändringar.
-
-Lägg till dedupe per `(company_id, lower(full_name))` så vi inte får dubbletter när team-sida + ledning-sida överlappar.
-
-### 4. UI
-
-`JobPeopleTab` och `People`-sidan visar redan namn/roll/dep/företag — fungerar direkt. Inga UI-ändringar krävs.
-
-(Valfritt senare: lägg till en KPI-ruta "Företag med ≥1 person" i jobbdetaljen — säg till om du vill ha det.)
-
-### 5. Förväntad kostnad
-
-Tier 1 (1 credit) + Tier 2 (1–2 credits map + 1–2 scrapes med extract = 3–5 credits + 1 LLM) ≈ **4–6 credits/företag** istället för dagens ~1. För ett 70-företagsjobb: ~300–400 credits istället för ~100. Det är priset för personer.
-
-`HARD_CAP` höjs tillbaka från 3 → 6.
+Ingen RLS-ändring (befintliga policies täcker).
 
 ## Verifiering
 
-Kör om `CRMdata: Finansiell leasing` (cleara source_pages/contacts/contact_people för jobbet först). Mät:
-- Antal företag med ≥1 person (mål: ≥60 %)
-- Andel personer med C-level-titel (mål: 100 % efter filter)
-- `firecrawl_calls` (förväntat ~80–110 för 16 företag)
+Kör om `CRMdata: Business Intelligence`. Mät:
+- Andel personer med mejl (mål: ≥40 % när företaget har person_high-mejl)
+- Andel företag som har minst en person-rad med mejl ELLER en generic-mejl (mål: ≥80 %)
+- Outreach-export: kontrollera att rader har `email` ifyllt och rätt `email_source`
 
 ## Filer som ändras
 
-- `supabase/functions/scrape-emails/index.ts` — Tier 2-gate borttagen, utökad sid-discovery, LLM-prompt + roll-filter, dedupe, HARD_CAP=6.
-
-Inga DB-migrationer. Ingen UI-kod ändras.
+- DB-migration (kolumner + index)
+- `supabase/functions/scrape-emails/index.ts` — LLM-prompt, email-match-pass, dedupe
+- `supabase/functions/send-to-outreach/index.ts` — person-centrerad payload + generic fallback
+- `src/lib/api.ts` — `PersonRow` får `email`, `emailConfidence`, `phone`
+- `src/lib/exporters.ts` — nya kolumner i `PEOPLE_EXPORT_FIELDS`
+- `src/components/jobDetail/JobPeopleTab.tsx` — kolumner Mejl + Telefon
+- `src/components/jobDetail/JobContactsTab.tsx` — filtrera till generic_email/phone
+- `src/pages/People.tsx`, `src/pages/Contacts.tsx` — samma uppdatering

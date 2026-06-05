@@ -68,12 +68,15 @@ export type Database = {
           crawl_job_id: string | null
           created_at: string
           department: string | null
+          email: string | null
+          email_confidence: string | null
           found_at: string
           full_name: string
           id: string
           import_id: string | null
           import_row_id: string | null
           is_decision_maker: boolean
+          phone: string | null
           role_title: string | null
           source_url: string
         }
@@ -82,12 +85,15 @@ export type Database = {
           crawl_job_id?: string | null
           created_at?: string
           department?: string | null
+          email?: string | null
+          email_confidence?: string | null
           found_at?: string
           full_name: string
           id?: string
           import_id?: string | null
           import_row_id?: string | null
           is_decision_maker?: boolean
+          phone?: string | null
           role_title?: string | null
           source_url: string
         }
@@ -96,12 +102,15 @@ export type Database = {
           crawl_job_id?: string | null
           created_at?: string
           department?: string | null
+          email?: string | null
+          email_confidence?: string | null
           found_at?: string
           full_name?: string
           id?: string
           import_id?: string | null
           import_row_id?: string | null
           is_decision_maker?: boolean
+          phone?: string | null
           role_title?: string | null
           source_url?: string
         }
