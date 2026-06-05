@@ -139,8 +139,8 @@ Deno.serve(async (req) => {
     }
 
     const withDomain = allCompanies.filter((c: any) => c.domain);
-    const pendingResolution = allCompanies.filter((c: any) => !c.domain && c.domain_status !== "failed");
-    const failedResolution = allCompanies.filter((c: any) => !c.domain && c.domain_status === "failed");
+    const pendingResolution = allCompanies.filter((c: any) => !c.domain && c.domain_status !== "failed" && c.domain_status !== "no_domain_found");
+    const failedResolution = allCompanies.filter((c: any) => !c.domain && (c.domain_status === "failed" || c.domain_status === "no_domain_found"));
     const todo = withDomain.filter((c: any) => !scrapedIds.has(c.id));
     const alreadyScraped = withDomain.length - todo.length;
 
