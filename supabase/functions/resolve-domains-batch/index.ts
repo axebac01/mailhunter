@@ -257,13 +257,13 @@ async function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T
 }
 
 async function resolveOne(
-  company: { id: string; name: string; country: string | null },
+  company: { id: string; name: string; country: string | null; domain_status?: string | null },
   jobCountry: string | null,
   apiKey: string,
   supabase: any,
   jobId?: string,
   blocklistGlobal?: Set<string>,
-): Promise<{ id: string; status: "resolved" | "failed"; domain?: string; queryUsed?: string; source?: string }> {
+): Promise<{ id: string; status: "resolved" | "failed" | "no_domain_found"; domain?: string; queryUsed?: string; source?: string }> {
   const { id, name } = company;
   const rawCountry = company.country ?? jobCountry ?? null;
   const country = normalizeCountry(rawCountry);
