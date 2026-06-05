@@ -528,7 +528,7 @@ Deno.serve(async (req) => {
         return /^[a-z]+\.[a-z]+$/.test(local) && rootDomain(emailHost(e)) === root;
       });
       if (sample) {
-        const peopleNoEmail = ranked.filter((p) => !p.email);
+        const peopleNoEmail = ranked.filter((p) => !p.email).slice(0, 1);
         for (const p of peopleNoEmail) {
           const tokens = p.full_name.toLowerCase()
             .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
