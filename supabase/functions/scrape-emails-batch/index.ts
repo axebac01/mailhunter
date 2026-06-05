@@ -309,10 +309,41 @@ Deno.serve(async (req) => {
     const totalScrapedSoFar = () => scrapedIds.size + scrapedThisWave;
 
     const work = (async () => {
+      startHeartbeat();
       try {
         await runPool(todo, async (c: any) => {
           const { data: cur } = await supabase.from("crawl_jobs").select("status").eq("id", jobId).maybeSingle();
           if (cur?.status !== "running") return;
+
+          // ── Per-company lock (5 min) to prevent parallel duplicate scrapes ──
+          // Atomic claim: only succeeds if no fresh lock exists. RowMatch count tells us if we got the slot.
+          const lockCutoff = new Date(Date.now() - 5 * 60_000).toISOString();
+          const { data: locked, error: lockErr } = await supabase
+            .from("companies")
+            .update({ scrape_lock_at: new Date().toISOString() })
+            .eq("id", c.id)
+            .or(`scrape_lock_at.is.null,scrape_lock_at.lt.${lockCutoff}`)
+            .select("id");
+          if (lockErr || !locked || locked.length === 0) {
+            await supabase.from("crawl_logs").insert({
+              crawl_job_id: jobId, level: "info",
+              message: `Skipping ${c.name ?? c.domain} — already being scraped by another worker.`,
+              meta_json: { event: "lock_skip", company_id: c.id },
+            });
+            return;
+          }
+
+          // ── Fresh source_pages double-check (race-window close) ──
+          const { count: existingPages } = await supabase
+            .from("source_pages")
+            .select("id", { count: "exact", head: true })
+            .eq("company_id", c.id)
+            .eq("crawl_job_id", jobId);
+          if ((existingPages ?? 0) > 0) {
+            // Already scraped in this job — release lock and skip
+            await supabase.from("companies").update({ scrape_lock_at: null }).eq("id", c.id);
+            return;
+          }
 
           await supabase.from("crawl_logs").insert({
             crawl_job_id: jobId, level: "info",
@@ -356,6 +387,9 @@ Deno.serve(async (req) => {
               crawl_job_id: jobId, level: "error",
               message: aborted ? `Scrape timed out (>${PER_COMPANY_TIMEOUT_MS}ms) for ${c.domain}` : `Scrape threw for ${c.domain}: ${e?.message ?? e}`,
             });
+          } finally {
+            // Always release lock so this company can be retried later if needed
+            await supabase.from("companies").update({ scrape_lock_at: null }).eq("id", c.id);
           }
           await supabase.from("crawl_logs").insert({
             crawl_job_id: jobId, level: ok ? "info" : "warn",
@@ -378,12 +412,6 @@ Deno.serve(async (req) => {
           return;
         }
 
-        // Are there still companies awaiting domain resolution?
-        const { data: stillCompanies } = await supabase
-          .from("companies")
-          .select("id, domain, domain_status")
-          .in("id", ids.slice(0, 1)); // cheap probe; we'll do full check below
-
         // Full check: look up all companies again in chunks
         const refreshed: any[] = [];
         for (let i = 0; i < ids.length; i += CHUNK) {
@@ -391,7 +419,7 @@ Deno.serve(async (req) => {
             .select("id, domain, domain_status").in("id", ids.slice(i, i + CHUNK));
           if (chunk) refreshed.push(...chunk);
         }
-        const stillPending = refreshed.filter((c: any) => !c.domain && c.domain_status !== "failed").length;
+        const stillPending = refreshed.filter((c: any) => !c.domain && c.domain_status !== "failed" && c.domain_status !== "no_domain_found").length;
         const resolvedNow = refreshed.filter((c: any) => c.domain).length;
 
         // Refresh scraped set
@@ -433,6 +461,8 @@ Deno.serve(async (req) => {
         });
         // Try to recover by re-invoking
         scheduleReinvoke(SUPABASE_URL, SERVICE_KEY, jobId);
+      } finally {
+        await stopHeartbeat();
       }
     })();
 
