@@ -742,6 +742,10 @@ export type Database = {
     }
     Functions: {
       clear_all_data: { Args: never; Returns: undefined }
+      increment_firecrawl_calls: {
+        Args: { delta: number; job_id: string }
+        Returns: undefined
+      }
       ingest_se_board: { Args: { p: Json }; Returns: number }
       ingest_se_bokslut: { Args: { p: Json }; Returns: number }
       ingest_se_companies: { Args: { p: Json }; Returns: number }
