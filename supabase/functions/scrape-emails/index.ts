@@ -1,11 +1,11 @@
 // Tiered, credit-frugal email + decision-maker extraction for a single company.
-// Goals: minimize Firecrawl spend, maximize % of companies where we reach SOMEONE.
+// Goals: maximize % of companies where we reach SOMEONE (Tier 1) AND get C-level names+roles (Tier 2).
 // Pipeline:
 //   0. Domain-cache: if another company with same root domain already has contacts → copy & exit (0 credits)
-//   1. Tier 1: HEAD-probe canonical contact paths → scrape FIRST one that exists (1 credit). Regex emails/phones/forms.
-//   2. Tier 2 (skip if Tier 1 found a generic@ or person mail): HEAD-probe leadership/team paths → scrape first hit with JSON-extract for people (≈5 credits, max 1 LLM/company). Rank decision-makers first.
-//   3. Tier 3 (only if 0 emails AND 0 people): map(limit 30) + scrape homepage (≈2 credits).
-// Hard cap: 5 Firecrawl calls + 1 LLM-extract per company. Count tracked on crawl_jobs.firecrawl_calls.
+//   1. Tier 1: HEAD-probe canonical contact paths → scrape first hit (1 credit). Regex emails/phones/forms.
+//   2. Tier 2 (ALWAYS when personNames=true): HEAD-probe leadership/team paths → scrape up to 2 with JSON-extract for C-level people (≈2–5 credits, max 2 LLM/company). Server-side filter keeps only roles matching the decision-maker regex.
+//   3. Tier 3 (only if 0 emails AND 0 people): map(limit 30) + scrape best link (≈2 credits).
+// Hard cap: 6 Firecrawl calls + 2 LLM-extracts per company. Count tracked on crawl_jobs.firecrawl_calls.
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 
