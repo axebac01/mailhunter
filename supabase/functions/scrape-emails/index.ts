@@ -1,11 +1,15 @@
 // Tiered, credit-frugal email + decision-maker extraction for a single company.
-// Goals: maximize % of companies where we reach SOMEONE (Tier 1) AND get C-level names+roles (Tier 2).
+// People-first model: every person row (contact_people) holds name + role + email + phone
+// together. Generic info@/sales@ + phone stay in contacts as company-level fallback.
 // Pipeline:
-//   0. Domain-cache: if another company with same root domain already has contacts → copy & exit (0 credits)
-//   1. Tier 1: HEAD-probe canonical contact paths → scrape first hit (1 credit). Regex emails/phones/forms.
-//   2. Tier 2 (ALWAYS when personNames=true): HEAD-probe leadership/team paths → scrape up to 2 with JSON-extract for C-level people (≈2–5 credits, max 2 LLM/company). Server-side filter keeps only roles matching the decision-maker regex.
-//   3. Tier 3 (only if 0 emails AND 0 people): map(limit 30) + scrape best link (≈2 credits).
-// Hard cap: 6 Firecrawl calls + 2 LLM-extracts per company. Count tracked on crawl_jobs.firecrawl_calls.
+//   0. Domain-cache: copy generic contacts from sibling with same domain (0 credits)
+//   1. Tier 1: scrape canonical /kontakt page (1 credit). Regex emails/phones/forms.
+//   2. Tier 2 (always when personNames): up to 2 leadership pages with JSON-extract.
+//      Server-side filter keeps only decision-maker roles.
+//   3. Tier 3 (only if 0 emails AND 0 people): map(limit 30) + scrape best link.
+//   4. Match-pass: link extracted person_high emails to people by name (firstname.lastname@).
+//      Unmatched person_high → synthesize person row with derived name + matched_high.
+// Hard cap: 6 Firecrawl calls + 2 LLM-extracts per company.
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 
