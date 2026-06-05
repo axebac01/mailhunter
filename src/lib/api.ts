@@ -439,7 +439,7 @@ export const api = {
     const offset = opts.offset ?? 0;
     let q = supabase
       .from("contact_people")
-      .select("id, full_name, role_title, department, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
+      .select("id, full_name, role_title, department, email, email_confidence, phone, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
       .order("found_at", { ascending: false });
     if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
     if (opts.importId) q = q.eq("import_id", opts.importId);
