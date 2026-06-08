@@ -20,6 +20,7 @@ const Companies = lazy(() => import("./pages/Companies"));
 const CompanyDetail = lazy(() => import("./pages/CompanyDetail"));
 const SeCompanies = lazy(() => import("./pages/SeCompanies"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
+const BulkCreateCrmdata = lazy(() => import("./pages/BulkCreateCrmdata"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 const queryClient = new QueryClient({
@@ -61,6 +62,7 @@ const App = () => (
               <Route path="/companies/:id" element={<CompanyDetail />} />
               <Route path="/se-companies" element={<SeCompanies />} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/bulk-crmdata" element={<BulkCreateCrmdata />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </Suspense>
