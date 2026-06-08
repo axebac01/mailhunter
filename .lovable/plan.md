@@ -1,81 +1,57 @@
-# Plan: Personer + kontakter i samma rad
+# Bulk-skapa 10 CRMdata-jobb från uppladdade xlsx-filer
 
-## Problem
+## Vad som ska byggas
 
-Idag är `contact_people` (namn/roll) och `contacts` (mejl/telefon) två separata tabeller. För Outreach behöver vi en **person-centrerad** vy där varje rad har namn + roll + mejl + telefon ihop. Generic-mejlen (info@) finns kvar som fallback för företag utan namngiven person.
+En **engångs-sida** `/bulk-crmdata` med en knapp "Skapa alla jobb". När du klickar går den igenom de 10 xlsx-filerna i sekvens och kör samma flöde som `CreateJob`-sidan idag:
 
-## Datamodell
+1. Parsa filen (samma `parseFile` + `autoMap` som vanligt — kolumnen `Företagsnamn` mappas automatiskt till `company_name`).
+2. Kör `runImport` (matchar mot `companies`-tabellen + skapar bolag som saknas).
+3. Skapar `crawl_job` med:
+   - **name**: `CRMdata: <originalnamn utan .xlsx>` (med åäö, mellanslag, &, kommatecken bevarade)
+   - **status**: `draft`
+   - **source_type**: `uploaded`
+   - **max_companies**: antalet matchade rader (ingen cap)
+   - **allowed_days**: mån–fre, **start**: 09:00, **end**: 18:00 (samma defaults som UI:t)
+   - **include_generic_emails**: ✅
+   - **include_person_emails**: ✅
+   - **include_phones**: ✅
+   - **include_contact_forms**: ❌ (enda undantaget)
+   - **include_contact_person_names**: ✅
+   - **include_contact_person_roles**: ✅
+   - **include_departments**: ✅
+   - **deduplicate**: ✅
+4. Kopplar importen till jobbet (`api.updateImport(importId, { crawl_job_id })`) och triggar `resolve-domains-batch` i bakgrunden — exakt som vanliga flödet.
 
-Lägg till på `contact_people`:
-- `email text` — personens mejl
-- `email_confidence text` — `extracted` (LLM hittade ihop med namnet), `matched_high` (matchat via heuristik: `fornamn.efternamn@domän`), `matched_low` (svagare match), `null` (ingen mejl hittad)
-- `phone text` — direkt-tel om vi hittar det
+Progress visas live per fil ("3/10 · Larm, Säkerhet & Bevakning · 398 rader matchade").
 
-Index på `(company_id, lower(email))` för dedupe.
+## Jobbnamn (exakt)
 
-## Extraktion (`scrape-emails/index.ts`)
+| Fil | Jobbnamn | Rader |
+|---|---|---|
+| IT-konsulter.xlsx | CRMdata: IT-konsulter | 2 504 |
+| IT-säkerhet.xlsx | CRMdata: IT-säkerhet | 63 |
+| Larm, Säkerhet & Bevakning.xlsx | CRMdata: Larm, Säkerhet & Bevakning | 398 |
+| Ledarskapsutveckling.xlsx | CRMdata: Ledarskapsutveckling | 70 |
+| Lyft, Gods & Materialhantering.xlsx | CRMdata: Lyft, Gods & Materialhantering | 295 |
+| Mät, Styr & Reglerteknik.xlsx | CRMdata: Mät, Styr & Reglerteknik | 593 |
+| Organisationskonsulter.xlsx | CRMdata: Organisationskonsulter | 5 280 |
+| PR-byråer.xlsx | CRMdata: PR-byråer | 58 |
+| Profil & Reklam - leverantörer.xlsx | CRMdata: Profil & Reklam - leverantörer | 78 |
+| Profil & Reklam - återförsäljare.xlsx | CRMdata: Profil & Reklam - återförsäljare | 271 |
 
-1. **Tier 2 LLM** returnerar redan `{full_name, role_title, department, email?}` — utöka prompten: be modellen explicit koppla mejl/tel som står bredvid namnet på sidan. Spara direkt på personen.
-2. **Efter Tier 1 + Tier 2**: kör en match-pass på server:
-   - För varje extraherad mejl med `class=person_high` (`fornamn.efternamn@domän`): plocka ut förnamn + efternamn ur local-part och försök matcha mot `contact_people.full_name` för samma company.
-     - Exakt match → fyll i `email` om tomt, sätt `email_confidence='matched_high'`.
-     - Ingen match men person_high → skapa en ny person-rad med `full_name` härlett från mejlet (`Förnamn Efternamn`), `role_title=null`, `email_confidence='matched_high'`. Dessa visas som "okänd roll" i UI.
-   - `person_low` (bara förnamn) → matcha bara om unikt förnamn bland företagets personer, annars lämna kvar som löst kontakt.
-3. **Generic-mejl** (info@, sales@) → stannar i `contacts` som idag, används som företags-fallback.
+Totalt ~9 600 företag fördelade på 10 draft-jobb.
 
-## UI
+## Tekniska detaljer
 
-### Ny primär vy: `JobPeopleTab` (befintlig flik döps om till "Kontakter")
-Kolumner: **Namn · Roll · Mejl · Telefon · Företag · Källa · Hittad**.
-Rader utan mejl visas grålt (kan ändå exporteras med `[generic]` mejl som fallback).
+- **Filerna bundlas** som lovable-assets pointers under `src/assets/crmdata-bulk/` (skapas via `lovable-assets create` från `/mnt/user-uploads/`). Sidan fetchar varje fil via dess CDN-URL och skickar in i `parseFile`.
+- **Ny route**: `/bulk-crmdata` registreras i `src/App.tsx`. Sidan är intern — inte länkad från sidopanelen.
+- **Återanvänder** `parseFile`, `autoMap`, `runImport`, `api.createJob`, `api.updateImport` — ingen ändring i pipeline-koden.
+- **Inget databasschema ändras.** Inga edge functions ändras.
+- **Sekventiellt** (en fil i taget) för att inte överbelasta `resolve-domains-batch`. Stora filer (IT-konsulter 2 504, Organisationskonsulter 5 280) tar några minuter var att importera/matcha.
+- Efter att alla 10 jobb är skapade kan rutten/sidan tas bort i ett separat steg om du vill.
 
-### `JobContactsTab` → "Företagskontakter" (fallback)
-Visa bara `generic_email` + telefon — alltså företagsnivå utan namn.
+## Filer som skapas/ändras
 
-### `Pages/People.tsx` + `Pages/Contacts.tsx`
-Samma uppdelning globalt.
-
-## Export → Outreach
-
-`projectPersonRow` i `src/lib/exporters.ts` får nya fält:
-- `email` (personens mejl, eller företagets generic om tomt och `include_generic_fallback=true`)
-- `email_source` (`person` / `generic_fallback`)
-- `phone`
-
-`send-to-outreach`-funktionen byggs om så att `contact_people` blir huvudkällan:
-- Skicka person med `email`, `first_name`, `last_name`, `role`, `company`.
-- Om en person saknar mejl och företaget har ett generic → skicka med generic som mejl, märk `notes: "generic email"`.
-- `contacts`-källan finns kvar för rena företagsmejlsutskick.
-
-## Migration
-
-```sql
-ALTER TABLE public.contact_people
-  ADD COLUMN email text,
-  ADD COLUMN email_confidence text CHECK (email_confidence IN ('extracted','matched_high','matched_low')),
-  ADD COLUMN phone text;
-
-CREATE INDEX idx_contact_people_email
-  ON public.contact_people (company_id, lower(email))
-  WHERE email IS NOT NULL;
-```
-
-Ingen RLS-ändring (befintliga policies täcker).
-
-## Verifiering
-
-Kör om `CRMdata: Business Intelligence`. Mät:
-- Andel personer med mejl (mål: ≥40 % när företaget har person_high-mejl)
-- Andel företag som har minst en person-rad med mejl ELLER en generic-mejl (mål: ≥80 %)
-- Outreach-export: kontrollera att rader har `email` ifyllt och rätt `email_source`
-
-## Filer som ändras
-
-- DB-migration (kolumner + index)
-- `supabase/functions/scrape-emails/index.ts` — LLM-prompt, email-match-pass, dedupe
-- `supabase/functions/send-to-outreach/index.ts` — person-centrerad payload + generic fallback
-- `src/lib/api.ts` — `PersonRow` får `email`, `emailConfidence`, `phone`
-- `src/lib/exporters.ts` — nya kolumner i `PEOPLE_EXPORT_FIELDS`
-- `src/components/jobDetail/JobPeopleTab.tsx` — kolumner Mejl + Telefon
-- `src/components/jobDetail/JobContactsTab.tsx` — filtrera till generic_email/phone
-- `src/pages/People.tsx`, `src/pages/Contacts.tsx` — samma uppdatering
+- `src/pages/BulkCreateCrmdata.tsx` (ny)
+- `src/App.tsx` (lägg till route)
+- `src/assets/crmdata-bulk/*.asset.json` (10 nya pointers)
