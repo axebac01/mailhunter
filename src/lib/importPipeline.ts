@@ -514,6 +514,8 @@ async function processBatch(ctx: PipelineCtx, rawRows: string[][], col: { name: 
     });
   }
 
+  subStep(0.66);
+
   // Track for resolver enqueue
   if (newlyInserted.length > 0) ctx.insertedCompanyIds.push(...newlyInserted);
 
