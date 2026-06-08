@@ -248,19 +248,30 @@ Deno.serve(async (req) => {
         const noProgress = lastPending === pendingResolution.length;
         const nextIdleWaves = noProgress ? idleWaves + 1 : 0;
 
-        // Stall protection: auto-pause after STALL_WAVE_LIMIT waves of no progress
+        // Stall protection: after STALL_WAVE_LIMIT waves of no progress, mark
+        // the stuck "unresolved" companies as "no_domain_found" so the job can
+        // continue/complete instead of pausing. Resolver has had its chance.
         if (nextIdleWaves >= STALL_WAVE_LIMIT) {
+          const stuckIds = pendingResolution.map((c: any) => c.id);
+          if (stuckIds.length > 0) {
+            await supabase
+              .from("companies")
+              .update({ domain_status: "no_domain_found" })
+              .in("id", stuckIds)
+              .eq("domain_status", "unresolved");
+          }
           await supabase.from("crawl_jobs").update({
-            status: "paused",
-            meta_json: { ...meta, paused_reason: "stalled", stalled_at: new Date().toISOString() },
+            meta_json: { ...meta, watchdog_last_pending: 0, watchdog_idle_waves: 0 },
           }).eq("id", jobId);
           await supabase.from("crawl_logs").insert({
-            crawl_job_id: jobId, level: "error",
-            message: `Auto-paused: no progress for ${STALL_WAVE_LIMIT} waves (~${Math.round(STALL_WAVE_LIMIT * REINVOKE_DELAY_MS / 1000)}s). ${pendingResolution.length} domains still pending. Click Start to retry.`,
+            crawl_job_id: jobId, level: "warn",
+            message: `Skipped ${stuckIds.length} stuck companies (no domain after ${STALL_WAVE_LIMIT} retries) — continuing scrape.`,
           });
+          await refreshCounters(scrapedIds.size);
           await stopHeartbeat();
-          return new Response(JSON.stringify({ stalled: true, pending: pendingResolution.length }), {
-            status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          scheduleReinvoke(SUPABASE_URL, SERVICE_KEY, jobId);
+          return new Response(JSON.stringify({ skippedStuck: stuckIds.length }), {
+            status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
 
