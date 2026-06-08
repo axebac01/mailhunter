@@ -314,7 +314,13 @@ type Norm = {
 interface BatchOutcome { matched: number; failed: number; }
 
 async function processBatch(ctx: PipelineCtx, rawRows: string[][], col: { name: number; country: number; website: number; industry: number; notes: number }, defaultCountry: string | null, onSubProgress?: (delta: number) => void): Promise<BatchOutcome> {
-  const subStep = (frac: number) => onSubProgress?.(Math.floor(rawRows.length * frac));
+  let emitted = 0;
+  const subStep = (frac: number) => {
+    if (!onSubProgress) return;
+    const target = Math.min(rawRows.length, Math.floor(rawRows.length * frac));
+    const delta = target - emitted;
+    if (delta > 0) { emitted = target; onSubProgress(delta); }
+  };
   // ---- Normalize ----
   const normalized: Norm[] = rawRows.map((r) => {
     const name = (r[col.name] ?? "").trim() || "Unknown";
