@@ -419,6 +419,8 @@ async function processBatch(ctx: PipelineCtx, rawRows: string[][], col: { name: 
     }
   }
 
+  subStep(0.33);
+
   // ---- Insert new companies (deduped within batch) ----
   const newDomainPayloads: any[] = [];
   const newDomainKeys: string[] = [];
