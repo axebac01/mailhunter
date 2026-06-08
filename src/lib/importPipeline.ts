@@ -694,11 +694,21 @@ export async function runImport(args: RunImportArgs): Promise<string> {
   const controller = { cancelled: false };
   importControllers.set(ctx.importId, controller);
 
-  emit("matching", 0, totalUpFront);
+  emit("saving", 0, totalUpFront);
 
-  const runOneBatch = async (rows: string[][]) => {
+  // Sub-batch progress: while a batch processes, advance the visible counter.
+  let inBatchProcessed = 0;
+  const runOneBatch = async (rows: string[][], batchIndex: number, batchCount: number) => {
+    console.debug(`[import] batch ${batchIndex + 1}/${batchCount || "?"} start (${rows.length} rows)`);
+    inBatchProcessed = 0;
+    const onSub = (delta: number) => {
+      inBatchProcessed += delta;
+      const shown = ctx.processedRows + inBatchProcessed;
+      const total = Math.max(ctx.totalRows, shown);
+      emit("saving", shown, total);
+    };
     try {
-      const { matched, failed } = await processBatch(ctx, rows, col, defaultCountry);
+      const { matched, failed } = await processBatch(ctx, rows, col, defaultCountry, onSub);
       ctx.matchedRows += matched;
       ctx.failedRows += failed;
       ctx.processedRows += rows.length;
@@ -715,9 +725,11 @@ export async function runImport(args: RunImportArgs): Promise<string> {
       }));
       try { await supabase.from("import_rows").insert(stub as any); } catch { /* swallow */ }
     }
+    inBatchProcessed = 0;
 
     if (ctx.totalRows < ctx.processedRows) ctx.totalRows = ctx.processedRows;
     emit("saving", ctx.processedRows, ctx.totalRows);
+    console.debug(`[import] batch ${batchIndex + 1}/${batchCount || "?"} done (processed ${ctx.processedRows}/${ctx.totalRows})`);
     api.updateImport(ctx.importId, {
       processed_rows: ctx.processedRows,
       matched_rows: ctx.matchedRows,
@@ -734,15 +746,18 @@ export async function runImport(args: RunImportArgs): Promise<string> {
   try {
     if (parseResult.kind === "buffered") {
       const allRows = parseResult.parsed.rows;
-      const batches = chunk(allRows, BATCH_SIZE);
-      for (const batch of batches) {
+      // For larger files, use smaller batches so the progress UI ticks frequently.
+      const effectiveBatch = allRows.length > 1000 ? 500 : BATCH_SIZE;
+      const batches = chunk(allRows, effectiveBatch);
+      for (let i = 0; i < batches.length; i++) {
         if (controller.cancelled) { cancelledMidRun = true; break; }
-        await runOneBatch(batch);
+        await runOneBatch(batches[i], i, batches.length);
       }
     } else {
+      let streamIdx = 0;
       await parseResult.iterate(async (rows) => {
         if (controller.cancelled) { cancelledMidRun = true; return; }
-        await runOneBatch(rows);
+        await runOneBatch(rows, streamIdx++, 0);
       });
     }
 
