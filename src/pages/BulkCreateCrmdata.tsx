@@ -18,6 +18,16 @@ import org from "@/assets/crmdata-bulk/Organisationskonsulter.xlsx.asset.json";
 import pr from "@/assets/crmdata-bulk/PR-byråer.xlsx.asset.json";
 import profilLev from "@/assets/crmdata-bulk/Profil_&_Reklam_-_leverantörer.xlsx.asset.json";
 import profilAter from "@/assets/crmdata-bulk/Profil_&_Reklam_-_återförsäljare.xlsx.asset.json";
+import programvara from "@/assets/crmdata-bulk/Programvaruleverantörer.xlsx.asset.json";
+import reklamMedia from "@/assets/crmdata-bulk/Reklam_&_Media.xlsx.asset.json";
+import revisorer from "@/assets/crmdata-bulk/Revisorer.xlsx.asset.json";
+import skyltar from "@/assets/crmdata-bulk/Skyltar.xlsx.asset.json";
+import stodFinans from "@/assets/crmdata-bulk/Stödverksamhet_finans.xlsx.asset.json";
+import tekniska from "@/assets/crmdata-bulk/Tekniska_konsulter.xlsx.asset.json";
+import telemarketing from "@/assets/crmdata-bulk/Telemarketing_&_Callcenter.xlsx.asset.json";
+import ror from "@/assets/crmdata-bulk/Tillverkning_av_rör_&_ledningar.xlsx.asset.json";
+import transport from "@/assets/crmdata-bulk/Transportservice.xlsx.asset.json";
+import utbildning from "@/assets/crmdata-bulk/Utbildningsföretag.xlsx.asset.json";
 
 type Asset = { url: string; original_filename: string; content_type: string };
 
@@ -32,6 +42,16 @@ const FILES: { asset: Asset; jobName: string }[] = [
   { asset: pr as Asset, jobName: "CRMdata: PR-byråer" },
   { asset: profilLev as Asset, jobName: "CRMdata: Profil & Reklam - leverantörer" },
   { asset: profilAter as Asset, jobName: "CRMdata: Profil & Reklam - återförsäljare" },
+  { asset: programvara as Asset, jobName: "CRMdata: Programvaruleverantörer" },
+  { asset: reklamMedia as Asset, jobName: "CRMdata: Reklam & Media" },
+  { asset: revisorer as Asset, jobName: "CRMdata: Revisorer" },
+  { asset: skyltar as Asset, jobName: "CRMdata: Skyltar" },
+  { asset: stodFinans as Asset, jobName: "CRMdata: Stödverksamhet finans" },
+  { asset: tekniska as Asset, jobName: "CRMdata: Tekniska konsulter" },
+  { asset: telemarketing as Asset, jobName: "CRMdata: Telemarketing & Callcenter" },
+  { asset: ror as Asset, jobName: "CRMdata: Tillverkning av rör & ledningar" },
+  { asset: transport as Asset, jobName: "CRMdata: Transportservice" },
+  { asset: utbildning as Asset, jobName: "CRMdata: Utbildningsföretag" },
 ];
 
 type Status = "pending" | "running" | "done" | "error";
