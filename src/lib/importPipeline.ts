@@ -313,7 +313,8 @@ type Norm = {
 
 interface BatchOutcome { matched: number; failed: number; }
 
-async function processBatch(ctx: PipelineCtx, rawRows: string[][], col: { name: number; country: number; website: number; industry: number; notes: number }, defaultCountry: string | null): Promise<BatchOutcome> {
+async function processBatch(ctx: PipelineCtx, rawRows: string[][], col: { name: number; country: number; website: number; industry: number; notes: number }, defaultCountry: string | null, onSubProgress?: (delta: number) => void): Promise<BatchOutcome> {
+  const subStep = (frac: number) => onSubProgress?.(Math.floor(rawRows.length * frac));
   // ---- Normalize ----
   const normalized: Norm[] = rawRows.map((r) => {
     const name = (r[col.name] ?? "").trim() || "Unknown";
