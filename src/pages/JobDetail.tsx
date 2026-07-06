@@ -324,8 +324,9 @@ export default function JobDetail() {
       <Tabs defaultValue="timeline">
         <TabsList>
           <TabsTrigger value="timeline">Timeline</TabsTrigger>
-          <TabsTrigger value="contacts">Contacts ({jobContacts.length})</TabsTrigger>
-          <TabsTrigger value="people">People ({jobPeople.length})</TabsTrigger>
+          <TabsTrigger value="contacts">Contacts ({jobContacts.length >= 10000 ? "10000+" : jobContacts.length})</TabsTrigger>
+          <TabsTrigger value="people">People ({jobPeople.length >= 10000 ? "10000+" : jobPeople.length})</TabsTrigger>
+
           <TabsTrigger value="pages">Source pages ({(sourcePages.data ?? []).length})</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
         </TabsList>
