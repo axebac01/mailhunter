@@ -414,13 +414,31 @@ async function resolveOne(
   }
 
   if (best) {
-    await supabase.from("companies").update({
+    const { error: updErr } = await supabase.from("companies").update({
       domain: best.host,
       website: `https://${best.host}`,
       source_url: best.url,
       domain_status: "resolved",
       updated_at: new Date().toISOString(),
     }).eq("id", id);
+    if (updErr && (updErr as any).code === "23505") {
+      // Domän redan tagen — matchen är sannolikt en directory/aggregator-sajt.
+      // Blockera hosten globalt så vi inte prövar den igen, markera som no_domain_found.
+      try { await supabase.from("domain_blocklist").insert({ host: best.host }); } catch (_) { /* dup insert ok */ }
+      blocklistGlobal?.add(best.host);
+      await supabase.from("companies").update({
+        domain_status: "no_domain_found",
+        updated_at: new Date().toISOString(),
+      }).eq("id", id);
+      if (jobId) {
+        await supabase.from("crawl_logs").insert({
+          crawl_job_id: jobId, level: "warn",
+          message: `Skipped "${name}" — ${best.host} already assigned to another company (added to blocklist).`,
+          meta_json: { companyId: id, host: best.host, event: "domain_collision" },
+        });
+      }
+      return { id, status: "no_domain_found" };
+    }
     if (jobId) {
       await supabase.from("crawl_logs").insert({
         crawl_job_id: jobId,
@@ -435,6 +453,7 @@ async function resolveOne(
     }
     return { id, status: "resolved", domain: best.host, queryUsed: bestQuery, source: finalSource };
   }
+
 
   // Escalate to no_domain_found on second consecutive failure (was already 'failed' going in)
   const finalStatus = company.domain_status === "failed" ? "no_domain_found" : "failed";
