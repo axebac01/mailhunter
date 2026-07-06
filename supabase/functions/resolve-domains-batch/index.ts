@@ -523,7 +523,7 @@ Deno.serve(async (req) => {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const slice = ids.slice(i, i + CHUNK);
       const { data: chunk, error } = await supabase.from("companies")
-        .select("id, name, country, domain, domain_status").in("id", slice);
+        .select("id, name, country, domain, domain_status, updated_at").in("id", slice);
       if (error) {
         if (jobId) await supabase.from("crawl_logs").insert({
           crawl_job_id: jobId, level: "error",
@@ -535,13 +535,26 @@ Deno.serve(async (req) => {
     }
 
     // Selection mode
-    const todo = reresolveAll
+    let todo = reresolveAll
       ? allCompanies
       : (retryFailed && includeUnresolved)
       ? allCompanies.filter((c: any) => !c.domain && c.domain_status !== "no_domain_found")
       : retryFailed
       ? allCompanies.filter((c: any) => !c.domain && c.domain_status === "failed")
       : allCompanies.filter((c: any) => !c.domain && c.domain_status !== "no_domain_found");
+
+    // De-dupe against concurrent resolver invocations: skip companies another
+    // resolver has already touched in the last 90s. Prevents parallel runs
+    // from wasting Firecrawl calls on the same top-of-list rows.
+    if (!reresolveAll && !Array.isArray(companyIds)) {
+      const RECENT_MS = 90_000;
+      const now = Date.now();
+      todo = todo.filter((c: any) => {
+        if (!c.updated_at) return true;
+        return now - new Date(c.updated_at).getTime() > RECENT_MS;
+      });
+    }
+
 
     // Time-budget the run so we always reply well under the 150s edge timeout.
     // Process a slice this invocation; if more remain, fire-and-forget a
