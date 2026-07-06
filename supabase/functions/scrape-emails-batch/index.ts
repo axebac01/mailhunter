@@ -275,9 +275,14 @@ Deno.serve(async (req) => {
           });
         }
 
-        // Auto-kick resolver if it hasn't been moving the queue
+        // Auto-kick resolver if it hasn't been moving the queue.
+        // Cooldown: only kick if ≥90s since the last kick, to avoid multiple
+        // parallel resolver invocations racing on the same companies.
         let kicked = false;
-        if (nextIdleWaves >= RESOLVER_KICK_AFTER_WAVES && nextIdleWaves % RESOLVER_KICK_AFTER_WAVES === 0) {
+        const RESOLVER_KICK_COOLDOWN_MS = 90_000;
+        const lastKickAt = Number(meta.last_resolver_kick_at ?? 0);
+        const cooldownOk = Date.now() - lastKickAt >= RESOLVER_KICK_COOLDOWN_MS;
+        if (nextIdleWaves >= RESOLVER_KICK_AFTER_WAVES && cooldownOk) {
           try {
             await fetch(`${SUPABASE_URL}/functions/v1/resolve-domains-batch`, {
               method: "POST",
@@ -288,10 +293,15 @@ Deno.serve(async (req) => {
           } catch (_) { /* best effort */ }
         }
 
-        // Persist watchdog counters
-        await supabase.from("crawl_jobs").update({
-          meta_json: { ...meta, watchdog_last_pending: pendingResolution.length, watchdog_idle_waves: nextIdleWaves },
-        }).eq("id", jobId);
+        // Persist watchdog counters (+ kick timestamp when we actually kicked)
+        const nextMeta: Record<string, unknown> = {
+          ...meta,
+          watchdog_last_pending: pendingResolution.length,
+          watchdog_idle_waves: nextIdleWaves,
+        };
+        if (kicked) nextMeta.last_resolver_kick_at = Date.now();
+        await supabase.from("crawl_jobs").update({ meta_json: nextMeta }).eq("id", jobId);
+
 
         await supabase.from("crawl_logs").insert({
           crawl_job_id: jobId, level: kicked ? "warn" : "info",
