@@ -417,38 +417,72 @@ export const api = {
 
   // Contacts (joined) — server-side filterable
   async listContacts(opts: ListContactsOpts = {}): Promise<ContactRow[]> {
-    const limit = Math.min(opts.limit ?? 2000, MAX_PAGE);
-    const offset = opts.offset ?? 0;
-    let q = supabase
-      .from("contacts")
-      .select("id, contact_type, value, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
-      .order("found_at", { ascending: false });
-    if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
-    if (opts.importId) q = q.eq("import_id", opts.importId);
-    if (opts.type) q = q.eq("contact_type", opts.type);
-    if (opts.search) q = q.ilike("value", `%${opts.search}%`);
-    q = q.range(offset, offset + limit - 1);
-    const { data, error } = await q;
-    if (error) throw error;
-    return (data ?? []).map((r) => mapContact(r as unknown as ContactJoined));
+    const buildQuery = (from: number, to: number) => {
+      let q = supabase
+        .from("contacts")
+        .select("id, contact_type, value, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
+        .order("found_at", { ascending: false });
+      if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
+      if (opts.importId) q = q.eq("import_id", opts.importId);
+      if (opts.type) q = q.eq("contact_type", opts.type);
+      if (opts.search) q = q.ilike("value", `%${opts.search}%`);
+      return q.range(from, to);
+    };
+    const explicit = opts.limit !== undefined || opts.offset !== undefined;
+    if (explicit) {
+      const limit = Math.min(opts.limit ?? MAX_PAGE, MAX_PAGE);
+      const offset = opts.offset ?? 0;
+      const { data, error } = await buildQuery(offset, offset + limit - 1);
+      if (error) throw error;
+      return (data ?? []).map((r) => mapContact(r as unknown as ContactJoined));
+    }
+    // Auto-paginate until we've fetched everything (or hit safety cap).
+    const FETCH_ALL_MAX = 10_000;
+    const out: ContactRow[] = [];
+    for (let offset = 0; offset < FETCH_ALL_MAX; offset += MAX_PAGE) {
+      const to = Math.min(offset + MAX_PAGE, FETCH_ALL_MAX) - 1;
+      const { data, error } = await buildQuery(offset, to);
+      if (error) throw error;
+      const rows = (data ?? []).map((r) => mapContact(r as unknown as ContactJoined));
+      out.push(...rows);
+      if (rows.length < MAX_PAGE) break;
+    }
+    return out;
   },
 
   // People — server-side filterable
   async listPeople(opts: ListPeopleOpts = {}): Promise<PersonRow[]> {
-    const limit = Math.min(opts.limit ?? 2000, MAX_PAGE);
-    const offset = opts.offset ?? 0;
-    let q = supabase
-      .from("contact_people")
-      .select("id, full_name, role_title, department, email, email_confidence, phone, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
-      .order("found_at", { ascending: false });
-    if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
-    if (opts.importId) q = q.eq("import_id", opts.importId);
-    if (opts.search) q = q.ilike("full_name", `%${opts.search}%`);
-    q = q.range(offset, offset + limit - 1);
-    const { data, error } = await q;
-    if (error) throw error;
-    return (data ?? []).map((r) => mapPerson(r as unknown as PersonJoined));
+    const buildQuery = (from: number, to: number) => {
+      let q = supabase
+        .from("contact_people")
+        .select("id, full_name, role_title, department, email, email_confidence, phone, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
+        .order("found_at", { ascending: false });
+      if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
+      if (opts.importId) q = q.eq("import_id", opts.importId);
+      if (opts.search) q = q.ilike("full_name", `%${opts.search}%`);
+      return q.range(from, to);
+    };
+    const explicit = opts.limit !== undefined || opts.offset !== undefined;
+    if (explicit) {
+      const limit = Math.min(opts.limit ?? MAX_PAGE, MAX_PAGE);
+      const offset = opts.offset ?? 0;
+      const { data, error } = await buildQuery(offset, offset + limit - 1);
+      if (error) throw error;
+      return (data ?? []).map((r) => mapPerson(r as unknown as PersonJoined));
+    }
+    const FETCH_ALL_MAX = 10_000;
+    const out: PersonRow[] = [];
+    for (let offset = 0; offset < FETCH_ALL_MAX; offset += MAX_PAGE) {
+      const to = Math.min(offset + MAX_PAGE, FETCH_ALL_MAX) - 1;
+      const { data, error } = await buildQuery(offset, to);
+      if (error) throw error;
+      const rows = (data ?? []).map((r) => mapPerson(r as unknown as PersonJoined));
+      out.push(...rows);
+      if (rows.length < MAX_PAGE) break;
+    }
+    return out;
   },
+
 
   // Imports
   async listImports(): Promise<ImportRow[]> {
