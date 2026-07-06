@@ -419,6 +419,7 @@ async function resolveOne(
       website: `https://${best.host}`,
       source_url: best.url,
       domain_status: "resolved",
+      updated_at: new Date().toISOString(),
     }).eq("id", id);
     if (jobId) {
       await supabase.from("crawl_logs").insert({
@@ -437,7 +438,8 @@ async function resolveOne(
 
   // Escalate to no_domain_found on second consecutive failure (was already 'failed' going in)
   const finalStatus = company.domain_status === "failed" ? "no_domain_found" : "failed";
-  await supabase.from("companies").update({ domain_status: finalStatus }).eq("id", id);
+  await supabase.from("companies").update({ domain_status: finalStatus, updated_at: new Date().toISOString() }).eq("id", id);
+
   if (jobId) {
     await supabase.from("crawl_logs").insert({
       crawl_job_id: jobId,
