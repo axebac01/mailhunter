@@ -228,7 +228,7 @@ Deno.serve(async (req) => {
         // Belt-and-suspenders: if the resolver auto-paused for payment, exit
         // even if our cached `job.status` snapshot still says "running".
         const { data: fresh } = await supabase
-          .from("crawl_jobs").select("status, meta_json").eq("id", jobId).maybeSingle();
+          .from("crawl_jobs").select("status, meta_json, last_run_at").eq("id", jobId).maybeSingle();
         const meta = (fresh?.meta_json as Record<string, unknown> | null) ?? {};
         const reason = meta.paused_reason;
         if (fresh?.status !== "running" || reason === "firecrawl_payment_required") {
@@ -255,9 +255,9 @@ Deno.serve(async (req) => {
           // Only give up on companies the resolver has actually attempted.
           // A company still untouched since the job started has never been
           // tried (e.g. the resolver never saw it) — keep it queued.
-          const jobStartedAt = new Date(String(meta.stall_baseline_at ?? "")).getTime();
-          const baseline = Number.isFinite(jobStartedAt) && jobStartedAt > 0
-            ? jobStartedAt
+          const runStart = fresh?.last_run_at ? new Date(String(fresh.last_run_at)).getTime() : NaN;
+          const baseline = Number.isFinite(runStart) && runStart > 0
+            ? runStart
             : Date.now() - 24 * 60 * 60 * 1000;
           const attempted = pendingResolution.filter(
             (c: any) => c.updated_at && new Date(c.updated_at).getTime() > baseline,
