@@ -499,22 +499,41 @@ Deno.serve(async (req) => {
     const { companyIds, importId, jobId, retryFailed, reresolveAll, includeUnresolved } = body ?? {};
 
     let ids: string[] = Array.isArray(companyIds) ? companyIds : [];
+
+    // The Data API caps every response at 1000 rows — always page through,
+    // otherwise big jobs only ever see their first 1000 companies.
+    const PAGE = 1000;
+    const pageAll = async (build: (from: number) => any): Promise<any[]> => {
+      const out: any[] = [];
+      let from = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { data, error } = await build(from).range(from, from + PAGE - 1);
+        if (error) break;
+        const list = data ?? [];
+        out.push(...list);
+        if (list.length < PAGE) break;
+        from += PAGE;
+      }
+      return out;
+    };
+
     if (importId) {
-      const { data: rows } = await supabase.from("import_rows")
-        .select("matched_company_id").eq("import_id", importId).not("matched_company_id", "is", null);
-      ids = ids.concat((rows ?? []).map((r: any) => r.matched_company_id));
+      const rows = await pageAll(() => supabase.from("import_rows")
+        .select("matched_company_id").eq("import_id", importId).not("matched_company_id", "is", null));
+      ids = ids.concat(rows.map((r: any) => r.matched_company_id));
     }
     if (jobId) {
       const { data: imps } = await supabase.from("imports").select("id").eq("crawl_job_id", jobId);
       const impIds = (imps ?? []).map((i: any) => i.id);
       if (impIds.length) {
-        const { data: rows } = await supabase.from("import_rows")
-          .select("matched_company_id").in("import_id", impIds).not("matched_company_id", "is", null);
-        ids = ids.concat((rows ?? []).map((r: any) => r.matched_company_id));
+        const rows = await pageAll(() => supabase.from("import_rows")
+          .select("matched_company_id").in("import_id", impIds).not("matched_company_id", "is", null));
+        ids = ids.concat(rows.map((r: any) => r.matched_company_id));
       }
       // Also include companies created directly by this job
-      const { data: byJob } = await supabase.from("companies").select("id").eq("created_by_job_id", jobId);
-      ids = ids.concat((byJob ?? []).map((c: any) => c.id));
+      const byJob = await pageAll(() => supabase.from("companies").select("id").eq("created_by_job_id", jobId));
+      ids = ids.concat(byJob.map((c: any) => c.id));
     }
     ids = Array.from(new Set(ids.filter(Boolean)));
 
