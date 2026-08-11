@@ -67,38 +67,22 @@ export default function JobDetail() {
   const domainStats = useQuery<DomainStatsResult>({
     queryKey: ["domainStats", id],
     queryFn: async () => {
-      const { data: imports, error: impErr } = await supabase.from("imports").select("id").eq("crawl_job_id", id);
-      if (impErr) {
-        console.error("[domainStats] imports lookup failed", { jobId: id, error: impErr });
-        throw impErr;
+      const { data, error } = await supabase.rpc("job_domain_stats", { job_id: id });
+      if (error) {
+        console.error("[domainStats] rpc failed", { jobId: id, error });
+        throw error;
       }
-      const importIds = (imports ?? []).map((i) => i.id);
-      if (importIds.length === 0) return { stats: null, companyIdCount: 0 };
-      const { data: rows, error: rowsErr } = await supabase.from("import_rows").select("matched_company_id").in("import_id", importIds).not("matched_company_id", "is", null);
-      if (rowsErr) {
-        console.error("[domainStats] import_rows lookup failed", { jobId: id, error: rowsErr });
-        throw rowsErr;
-      }
-      const companyIds = Array.from(new Set((rows ?? []).map((r) => r.matched_company_id).filter(Boolean) as string[]));
-      const companyIdCount = companyIds.length;
-      if (companyIdCount === 0) return { stats: { total: 0, resolved: 0, unresolved: 0, failed: 0 }, companyIdCount: 0 };
-      const { data: companies, error: compErr } = await supabase.from("companies").select("id, domain, domain_status").in("id", companyIds);
-      if (compErr) {
-        console.error("[domainStats] query failed", { jobId: id, companyIdCount, error: compErr });
-        throw compErr;
-      }
-      const list = companies ?? [];
-      if (list.length < companyIdCount) {
-        console.warn("[domainStats] partial response", { jobId: id, requested: companyIdCount, received: list.length });
-      }
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) return { stats: null, companyIdCount: 0 };
+      const total = Number(row.total ?? 0);
       return {
         stats: {
-          total: list.length,
-          resolved: list.filter((c) => c.domain).length,
-          unresolved: list.filter((c) => !c.domain && (c.domain_status === "unresolved" || !c.domain_status)).length,
-          failed: list.filter((c) => !c.domain && c.domain_status === "failed").length,
+          total,
+          resolved: Number(row.resolved ?? 0),
+          unresolved: Number(row.unresolved ?? 0),
+          failed: Number(row.failed ?? 0),
         },
-        companyIdCount,
+        companyIdCount: total,
       };
     },
     refetchInterval: 5000,
@@ -205,6 +189,12 @@ export default function JobDetail() {
               if (j.status === "paused" || j.status === "stopped") resumeScraping.mutate();
               else updateStatus.mutate("running");
             }}><Play className="h-4 w-4" /> Start</Button>
+            {j.status === "running" && (
+              <Button variant="outline" size="sm" disabled={resumeScraping.isPending || !!pendingAction}
+                onClick={() => resumeScraping.mutate()} title="Clears stale worker locks and restarts resolver + scraper">
+                {resumeScraping.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />} Restart worker
+              </Button>
+            )}
             <Button variant="outline" size="sm" disabled={j.status !== "running" || !!pendingAction} onClick={() => {
               setPendingAction({ kind: "pausing", startedAt: Date.now(), estimatedWaveMs: estimateWaveMsFromLogs(logs.data) });
               updateStatus.mutate("paused");

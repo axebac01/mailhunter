@@ -758,6 +758,16 @@ export type Database = {
       ingest_se_board: { Args: { p: Json }; Returns: number }
       ingest_se_bokslut: { Args: { p: Json }; Returns: number }
       ingest_se_companies: { Args: { p: Json }; Returns: number }
+      job_domain_stats: {
+        Args: { job_id: string }
+        Returns: {
+          failed: number
+          no_domain_found: number
+          resolved: number
+          total: number
+          unresolved: number
+        }[]
+      }
       refresh_se_sni_codes: { Args: never; Returns: undefined }
       se_sni_options: {
         Args: never
