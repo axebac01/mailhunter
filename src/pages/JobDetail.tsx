@@ -189,6 +189,12 @@ export default function JobDetail() {
               if (j.status === "paused" || j.status === "stopped") resumeScraping.mutate();
               else updateStatus.mutate("running");
             }}><Play className="h-4 w-4" /> Start</Button>
+            {j.status === "running" && (
+              <Button variant="outline" size="sm" disabled={resumeScraping.isPending || !!pendingAction}
+                onClick={() => resumeScraping.mutate()} title="Clears stale worker locks and restarts resolver + scraper">
+                {resumeScraping.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />} Restart worker
+              </Button>
+            )}
             <Button variant="outline" size="sm" disabled={j.status !== "running" || !!pendingAction} onClick={() => {
               setPendingAction({ kind: "pausing", startedAt: Date.now(), estimatedWaveMs: estimateWaveMsFromLogs(logs.data) });
               updateStatus.mutate("paused");
