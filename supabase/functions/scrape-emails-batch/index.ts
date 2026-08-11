@@ -252,25 +252,42 @@ Deno.serve(async (req) => {
         // the stuck "unresolved" companies as "no_domain_found" so the job can
         // continue/complete instead of pausing. Resolver has had its chance.
         if (nextIdleWaves >= STALL_WAVE_LIMIT) {
-          const stuckIds = pendingResolution.map((c: any) => c.id);
+          // Only give up on companies the resolver has actually attempted.
+          // A company still untouched since the job started has never been
+          // tried (e.g. the resolver never saw it) — keep it queued.
+          const jobStartedAt = new Date(String(meta.stall_baseline_at ?? "")).getTime();
+          const baseline = Number.isFinite(jobStartedAt) && jobStartedAt > 0
+            ? jobStartedAt
+            : Date.now() - 24 * 60 * 60 * 1000;
+          const attempted = pendingResolution.filter(
+            (c: any) => c.updated_at && new Date(c.updated_at).getTime() > baseline,
+          );
+          const stuckIds = attempted.map((c: any) => c.id);
           if (stuckIds.length > 0) {
-            await supabase
-              .from("companies")
-              .update({ domain_status: "no_domain_found" })
-              .in("id", stuckIds)
-              .eq("domain_status", "unresolved");
+            const CH = 200;
+            for (let i = 0; i < stuckIds.length; i += CH) {
+              await supabase
+                .from("companies")
+                .update({ domain_status: "no_domain_found" })
+                .in("id", stuckIds.slice(i, i + CH))
+                .eq("domain_status", "unresolved");
+            }
           }
+          const untried = pendingResolution.length - stuckIds.length;
           await supabase.from("crawl_jobs").update({
-            meta_json: { ...meta, watchdog_last_pending: 0, watchdog_idle_waves: 0 },
+            meta_json: { ...meta, watchdog_last_pending: 0, watchdog_idle_waves: 0, last_resolver_kick_at: 0 },
           }).eq("id", jobId);
           await supabase.from("crawl_logs").insert({
-            crawl_job_id: jobId, level: "warn",
-            message: `Skipped ${stuckIds.length} stuck companies (no domain after ${STALL_WAVE_LIMIT} retries) — continuing scrape.`,
+            crawl_job_id: jobId,
+            level: "warn",
+            message: stuckIds.length > 0
+              ? `Skipped ${stuckIds.length} stuck companies (no domain after ${STALL_WAVE_LIMIT} retries)${untried > 0 ? `, kept ${untried} never-attempted companies queued` : ""} — continuing.`
+              : `${untried} companies still awaiting a first resolver attempt — kept queued, resolver will be kicked again.`,
           });
           await refreshCounters(scrapedIds.size);
           await stopHeartbeat();
           scheduleReinvoke(SUPABASE_URL, SERVICE_KEY, jobId);
-          return new Response(JSON.stringify({ skippedStuck: stuckIds.length }), {
+          return new Response(JSON.stringify({ skippedStuck: stuckIds.length, keptQueued: untried }), {
             status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
