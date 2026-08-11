@@ -1,72 +1,65 @@
+# Insynia: Redovisningskonsulter sitter fast — orsak och fix
+
 ## Vad som faktiskt händer
 
-Jobbet är kört (`status=running`, worker-heartbeat 12:46:42, `last_resolver_kick_at` uppdateras). Resolvern loggar 60–80 `Resolved …` per minut. **Men noll av jobbets företag uppdateras i DB** — kollade slumpmässiga rader från de senaste "Resolved"-loggarna, alla har fortfarande `domain=NULL, domain_status='unresolved'`, `updated_at` från 11:08.
-
-## Root cause: UNIQUE-constraint på `companies.domain`
+Jobbet är inte pausat — det är `running` och workern har heartbeat just nu. Därför visar knappen "Pausa"/"Stoppa" istället för Start; det går inte att starta ett jobb som systemet redan anser kör. Men det snurrar i en loop utan att göra något:
 
 ```
-companies_domain_key UNIQUE (domain)
+Wave start: 0 to scrape (582 already done), 5315 awaiting domain resolution, 418 no domain.
+Waiting on resolution: 5315 pending. No movement for 19 waves — kicked resolver.
+Retrying failed domains for 0 companies …
+Domain resolution complete: 0 resolved, 0 failed.
 ```
 
-Resolvern hittar samma directory-domän för hundratals olika bolag i den här branschen:
+Scrapern hittar 5315 företag som väntar på domän, kickar resolvern, och resolvern svarar "0 företag att göra". Loopen upprepas i evighet. Inget företag i jobbet har uppdaterats sedan 6 juli.
 
-| host | antal "Resolved"-loggar (60 min) |
+## Root cause: 1000-radersgränsen i resolverns id-hämtning
+
+`resolve-domains-batch` bygger sin lista så här (rad 507–518):
+
+```
+supabase.from("import_rows").select("matched_company_id").in("import_id", impIds)
+```
+
+Ingen paginering. Data-API:t returnerar **max 1000 rader** per anrop. Jobbet har 6315 företag, så resolvern ser bara de första 1000 — och de 1000 är exakt de som redan är klara:
+
+| domain_status | antal |
 |---|---|
-| krafman.se | 457 |
-| bytredovisning.se | 288 |
-| redovisning.ai | 143 |
-| boolag.se | 71 |
-| 118100.se | 38 |
+| resolved | 581 |
+| no_domain_found | 419 |
+| unresolved | 5315 |
 
-Första företaget får domänen. De **övriga 400+ per host** träffar en unique-collision i `UPDATE companies SET domain=…`. Felet slukas (ingen try/catch runt update:en), men success-loggen skrivs ändå → loggen ljuger. Företagen står kvar som `unresolved`, plockas upp av nästa våg, och samma sak händer igen. Det är därför counters inte rör sig.
+581 + 419 = 1000. Resolvern filtrerar bort båda kategorierna och landar på `todo = 0`. De 5315 som faktiskt behöver jobb ligger på sida 2+ och nås aldrig.
+
+Samma 1000-gräns slår mot UI:t: `JobDetail.tsx` (rad 77–85) hämtar `import_rows`, får 1000 id:n, och skickar dem som `.in("id", [1000 uuid])` — den URL:en blir för lång och Data-API:t svarar `400 Bad Request`. Det är felet som spammar konsolen var 5:e sekund och gör att domänstatistiken/bannern inte visas.
+
+Dessutom: watchdogen hann precis (14:44) markera "5315 stuck companies" — de riskerar att flippas till `no_domain_found` fast de aldrig ens har provats.
 
 ## Fix
 
-Tre delar i `supabase/functions/resolve-domains-batch/index.ts` — inga schemaändringar:
+**1. Paginera id-hämtningen i `resolve-domains-batch`** (rad 502–518)
+Loopa `import_rows` i sidor om 1000 med `.range(from, from+999)` tills en sida är kortare än 1000 — samma mönster som redan finns i `resume-job`. Gör samma sak för `importId`-grenen och för `companies.created_by_job_id`.
 
-**1. Hantera unique-collision explicit i `resolveOne`** (kring rad 416–422)
+**2. Servergjord domänstatistik i stället för 1000 uuid:n i URL:en**
+Ny RPC `job_domain_stats(job_id uuid)` som returnerar `total / resolved / unresolved / failed / no_domain_found` med en enda aggregerande SQL över `imports → import_rows → companies`. `JobDetail.tsx` anropar RPC:n i stället för de tre klientfrågorna. Löser både 400-felet och att siffrorna bara speglade 1000 av 6315 företag.
 
-```
-const { error: updErr } = await supabase.from("companies").update({...}).eq("id", id);
-if (updErr?.code === "23505") {
-  // Domain redan tagen av annat bolag — matchen är sannolikt en directory-sajt.
-  // Blockera hosten globalt så vi slipper prova den igen, markera företaget failed.
-  await supabase.from("domain_blocklist").insert({ host: best.host }).select();
-  await supabase.from("companies").update({
-    domain_status: "no_domain_found", updated_at: new Date().toISOString(),
-  }).eq("id", id);
-  // Logga warn istället för success så det syns i loggen.
-  if (jobId) await supabase.from("crawl_logs").insert({
-    crawl_job_id: jobId, level: "warn",
-    message: `Skipped "${name}" — ${best.host} already assigned to another company (added to blocklist).`,
-    meta_json: { companyId: id, host: best.host, event: "domain_collision" },
-  });
-  return { id, status: "failed" };
-}
-```
+**3. Skydda watchdogen mot falska "stuck"-markeringar**
+Markera bara ett företag som `no_domain_found` om resolvern faktiskt har försökt (dvs. `updated_at` har rörts efter jobbets `last_run_at`). Annars logga varning och kicka resolvern igen i stället för att tysta bort tusentals företag.
 
-**2. Efter varje våg, ta bort blocklistade hostar från kandidaterna framåt**
+**4. Engångsstädning för det här jobbet**
+- Återställ de företag som watchdogen just flaggade utan att ha provats: `no_domain_found → unresolved` för jobbets företag där `updated_at` är från importtillfället.
+- Nollställ `watchdog_idle_waves` / `watchdog_last_pending` i jobbets `meta_json` så räknaren startar om.
 
-Läs in `blocklistGlobal` (redan gjort på rad 517–518) före varje våg istället för bara en gång per invocation, så nyligen tillagda directory-hostar hoppas över resten av körningen.
+**5. Möjlighet att bryta ett hängande jobb från UI:t**
+I `JobDetail` visas i dag bara Pausa/Stoppa när status är `running`. Lägg till en "Starta om worker"-knapp som syns när jobbet är `running` men inget scrapats de senaste ~5 minuterna — den anropar `resume-job` (som redan rensar worker-slot och lås) så du inte behöver stoppa och starta manuellt.
 
-Alternativt enklare: efter en collision, pusha hosten till in-memory `blocklistGlobal` (`blocklistGlobal.add(best.host)`) så efterföljande `resolveOne`-anrop i samma invocation redan filtrerar bort den innan verifikation.
+## Förväntat resultat
 
-**3. Retroaktivt: rensa upp nuvarande jobb**
-
-Kör en engångs-SQL (via migration eller `supabase--read_query` med `UPDATE` via edge — vi använder migration här):
-
-- Skapa `domain_blocklist`-rader för `krafman.se`, `bytredovisning.se`, `redovisning.ai`, `boolag.se`, `118100.se`, `allabolag.se`, `hitta.se`, `eniro.se`, `merinfo.se`, `ratsit.se`, `birthday.se`, `bolagsfakta.se` — kända directory/aggregator-sajter.
-- För jobbets 5369 `unresolved` företag som inte har någon egen `domain` men där resolvern har försökt (log-events): lämna orörda; nästa resolver-anrop får försöka igen utan directory-matcher.
-
-## Vad som händer efter deployen
-
-- Nästa resolver-våg försöker inte längre matcha mot directory-domäner (blocklist).
-- När den ändå hittar en kollision, markeras företaget som `no_domain_found` istället för att fastna i loop.
-- Counter av `unresolved` börjar sjunka på riktigt. Scrapern får domäner att jobba på och `contacts_found` / `people_found` börjar öka.
+Resolvern får alla 6315 företag, `unresolved` börjar sjunka på riktigt, scrapern får domäner att jobba på, och domänstatistiken i jobbvyn visar korrekta tal utan konsolfel.
 
 ## Filer som ändras
 
-- `supabase/functions/resolve-domains-batch/index.ts` — collision-handling + in-memory blocklist-update efter collision.
-- En ny migration som seedar `domain_blocklist` med de kända directory-hostarna listade ovan.
-
-Ingen UI-ändring.
+- `supabase/functions/resolve-domains-batch/index.ts` — paginering av id-hämtningen
+- `supabase/functions/scrape-emails-batch/index.ts` — striktare stuck-detektion
+- ny migration — RPC `job_domain_stats` + engångsstädning av jobbet
+- `src/pages/JobDetail.tsx` — använd RPC:n, lägg till "Starta om worker"
