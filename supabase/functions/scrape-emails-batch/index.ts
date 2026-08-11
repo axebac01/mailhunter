@@ -168,7 +168,7 @@ Deno.serve(async (req) => {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const slice = ids.slice(i, i + CHUNK);
       const { data: chunk } = await supabase.from("companies")
-        .select("id, name, domain, domain_status").in("id", slice);
+        .select("id, name, domain, domain_status, updated_at").in("id", slice);
       if (chunk) allCompanies.push(...chunk);
     }
 
