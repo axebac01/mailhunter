@@ -123,7 +123,7 @@ Deno.serve(async (req) => {
         try {
           await fetch(`${SUPABASE_URL}/functions/v1/resolve-domains-batch`, {
             method: "POST", headers,
-            body: JSON.stringify({ jobId, retryFailed: true }),
+            body: JSON.stringify({ jobId, retryFailed: true, includeUnresolved: true }),
           });
         } catch (e: any) {
           await supabase.from("crawl_logs").insert({
