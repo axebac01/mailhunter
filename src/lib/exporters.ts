@@ -116,12 +116,38 @@ export async function exportPeople(rows: PersonRow[], format: ExportFormat) {
   return fileName;
 }
 
-export async function exportJobResults(rows: ContactRow[], format: ExportFormat, jobName?: string) {
-  const projected = rows.map(projectContactRow);
+// Which dataset(s) a job export should contain.
+export type JobExportDataset = "people" | "contacts" | "both";
+
+export async function exportJobResults(
+  contacts: ContactRow[],
+  people: PersonRow[],
+  format: ExportFormat,
+  jobName?: string,
+  dataset: JobExportDataset = "contacts",
+) {
   const base = jobName ? sanitizeFileName(jobName) : `job_results_${todayStr()}`;
+  if (dataset === "both") {
+    const peopleName = `${base} - people.${format}`;
+    const contactsName = `${base} - contacts.${format}`;
+    const files: Record<string, Uint8Array> = {
+      [peopleName]: rowsToBytes(people.map(projectPersonRow), format),
+      [contactsName]: rowsToBytes(contacts.map(projectContactRow), format),
+    };
+    triggerDownload(new Blob([zipSync(files)], { type: "application/zip" }), `${base}.zip`);
+    await api.recordExport({ export_type: "people", file_format: format, file_name: peopleName, row_count: people.length });
+    await api.recordExport({ export_type: "job_results", file_format: format, file_name: contactsName, row_count: contacts.length });
+    return `${base}.zip`;
+  }
+  if (dataset === "people") {
+    const fileName = `${base}.${format}`;
+    downloadRows(people.map(projectPersonRow), base, format);
+    await api.recordExport({ export_type: "people", file_format: format, file_name: fileName, row_count: people.length });
+    return fileName;
+  }
   const fileName = `${base}.${format}`;
-  downloadRows(projected, base, format);
-  await api.recordExport({ export_type: "job_results", file_format: format, file_name: fileName, row_count: rows.length });
+  downloadRows(contacts.map(projectContactRow), base, format);
+  await api.recordExport({ export_type: "job_results", file_format: format, file_name: fileName, row_count: contacts.length });
   return fileName;
 }
 
