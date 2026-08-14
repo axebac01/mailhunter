@@ -3,9 +3,10 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { ProgressBar } from "@/components/app/ProgressBar";
-import { Plus, Search, Play, Pause, Square, Copy, Trash2, Eye, MoreHorizontal, Briefcase } from "lucide-react";
+import { Plus, Search, Play, Pause, Square, Copy, Trash2, Eye, MoreHorizontal, Briefcase, Download } from "lucide-react";
 import { toast } from "sonner";
 import { api, type JobStatus } from "@/lib/api";
+import { exportJobsZip, type ExportFormat } from "@/lib/exporters";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
 import { PageHeader } from "@/components/app/PageHeader";
 import { JobStatusBadge } from "@/components/app/StatusBadge";
@@ -17,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { fmtDate, fmtRelative, fmtNum } from "@/lib/format";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -33,6 +35,8 @@ export default function Jobs() {
   const [createdFrom, setCreatedFrom] = useState("");
   const [lastRunFrom, setLastRunFrom] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     const channel = supabase
@@ -79,6 +83,44 @@ export default function Jobs() {
 
   const clearFilters = () => { setStatus("all"); setCountry("all"); setIndustry("all"); setSearch(""); setCreatedFrom(""); setLastRunFrom(""); };
 
+  const toggleSelected = (id: string, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id); else next.delete(id);
+      return next;
+    });
+  };
+
+  const allFilteredSelected = filtered.length > 0 && filtered.every((j) => selected.has(j.id));
+  const someFilteredSelected = filtered.some((j) => selected.has(j.id));
+
+  const toggleSelectAllFiltered = (checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) filtered.forEach((j) => next.add(j.id));
+      else filtered.forEach((j) => next.delete(j.id));
+      return next;
+    });
+  };
+
+  const handleBulkExport = async (format: ExportFormat) => {
+    const chosen = jobs.filter((j) => selected.has(j.id));
+    if (chosen.length === 0 || exporting) return;
+    setExporting(true);
+    const toastId = "jobs-bulk-export";
+    try {
+      toast.loading(`Exporting job 1 of ${chosen.length}…`, { id: toastId });
+      const { zipName, totalRows } = await exportJobsZip(chosen, format, (done, total) => {
+        if (done < total) toast.loading(`Exporting job ${done + 1} of ${total}…`, { id: toastId });
+      });
+      toast.success(`Exported ${chosen.length} job${chosen.length === 1 ? "" : "s"} (${fmtNum(totalRows)} rows) to ${zipName}`, { id: toastId });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Export failed", { id: toastId });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="p-6 max-w-[1600px] mx-auto">
       <PageHeader
@@ -123,6 +165,17 @@ export default function Jobs() {
           {(status !== "all" || country !== "all" || industry !== "all" || search || createdFrom || lastRunFrom) && (
             <Button variant="ghost" size="sm" onClick={clearFilters}>Clear filters</Button>
           )}
+          {selected.size > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" disabled={exporting}><Download className="h-4 w-4" /> Export selected ({selected.size})</Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => handleBulkExport("csv")}>CSV — one file per job (.zip)</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleBulkExport("xlsx")}>XLSX — one file per job (.zip)</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </Card>
 
@@ -141,6 +194,13 @@ export default function Jobs() {
             <Table>
               <TableHeader className="sticky top-0 bg-card z-10">
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      checked={allFilteredSelected ? true : someFilteredSelected ? "indeterminate" : false}
+                      onCheckedChange={(c) => toggleSelectAllFiltered(c === true)}
+                      aria-label="Select all filtered jobs"
+                    />
+                  </TableHead>
                   <TableHead>Job name</TableHead><TableHead>Industry</TableHead><TableHead>Country</TableHead>
                   <TableHead>Status</TableHead><TableHead>Created</TableHead><TableHead>Last run</TableHead>
                   <TableHead>Schedule</TableHead>
@@ -152,7 +212,14 @@ export default function Jobs() {
                 {filtered.map((j) => {
                   const isActive = j.status === "running" || j.status === "scheduled" || j.status === "paused";
                   return (
-                  <TableRow key={j.id} className="cursor-pointer" onClick={() => navigate(`/jobs/${j.id}`)}>
+                  <TableRow key={j.id} className="cursor-pointer" data-state={selected.has(j.id) ? "selected" : undefined} onClick={() => navigate(`/jobs/${j.id}`)}>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={selected.has(j.id)}
+                        onCheckedChange={(c) => toggleSelected(j.id, c === true)}
+                        aria-label={`Select ${j.name}`}
+                      />
+                    </TableCell>
                     <TableCell className="font-medium">{j.name}</TableCell>
                     <TableCell className="text-muted-foreground">{j.industry ?? "—"}</TableCell>
                     <TableCell className="text-muted-foreground">{j.country ?? "—"}</TableCell>

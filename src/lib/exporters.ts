@@ -1,10 +1,17 @@
 import * as XLSX from "xlsx";
+import { zipSync, strToU8 } from "fflate";
 import { api } from "@/lib/api";
 import type { ContactRow, PersonRow } from "@/lib/api";
 
 export type ExportFormat = "csv" | "xlsx";
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// Make a string safe to use as a file name on any OS.
+export function sanitizeFileName(name: string): string {
+  const cleaned = name.replace(/[:/\\?%*|"<>]/g, "-").replace(/\s+/g, " ").trim();
+  return cleaned || "export";
+}
 
 // Strict allow-list of fields per the brief.
 export const CONTACT_EXPORT_FIELDS = [
@@ -109,12 +116,50 @@ export async function exportPeople(rows: PersonRow[], format: ExportFormat) {
   return fileName;
 }
 
-export async function exportJobResults(rows: ContactRow[], format: ExportFormat) {
+export async function exportJobResults(rows: ContactRow[], format: ExportFormat, jobName?: string) {
   const projected = rows.map(projectContactRow);
-  const fileName = `job_results_${todayStr()}.${format}`;
-  downloadRows(projected, fileName.replace(`.${format}`, ""), format);
+  const base = jobName ? sanitizeFileName(jobName) : `job_results_${todayStr()}`;
+  const fileName = `${base}.${format}`;
+  downloadRows(projected, base, format);
   await api.recordExport({ export_type: "job_results", file_format: format, file_name: fileName, row_count: rows.length });
   return fileName;
+}
+
+// Serialize rows to file bytes without triggering a download (for zip bundling).
+function rowsToBytes(input: Record<string, unknown>[], format: ExportFormat): Uint8Array {
+  const rows = input.length === 0 ? [{ note: "No rows to export" }] : input;
+  const ws = XLSX.utils.json_to_sheet(rows);
+  if (format === "csv") return strToU8(XLSX.utils.sheet_to_csv(ws));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+  return new Uint8Array(XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer);
+}
+
+// Export many jobs at once: one file per job (named after the job) inside a zip.
+export async function exportJobsZip(
+  jobs: { id: string; name: string }[],
+  format: ExportFormat,
+  onProgress?: (done: number, total: number) => void,
+) {
+  const files: Record<string, Uint8Array> = {};
+  const usedNames = new Set<string>();
+  let totalRows = 0;
+  for (let i = 0; i < jobs.length; i++) {
+    onProgress?.(i, jobs.length);
+    const rows = await api.listContacts({ jobId: jobs[i].id });
+    let base = sanitizeFileName(jobs[i].name);
+    let n = 2;
+    while (usedNames.has(base.toLowerCase())) base = `${sanitizeFileName(jobs[i].name)} (${n++})`;
+    usedNames.add(base.toLowerCase());
+    const fileName = `${base}.${format}`;
+    files[fileName] = rowsToBytes(rows.map(projectContactRow), format);
+    totalRows += rows.length;
+    await api.recordExport({ export_type: "job_results", file_format: format, file_name: fileName, row_count: rows.length });
+  }
+  onProgress?.(jobs.length, jobs.length);
+  const zipName = `jobs_export_${todayStr()}.zip`;
+  triggerDownload(new Blob([zipSync(files)], { type: "application/zip" }), zipName);
+  return { zipName, totalRows };
 }
 
 export async function exportImportResults(rows: Record<string, unknown>[], format: ExportFormat) {
