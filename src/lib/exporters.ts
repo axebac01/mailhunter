@@ -9,7 +9,11 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 
 // Make a string safe to use as a file name on any OS.
 export function sanitizeFileName(name: string): string {
-  const cleaned = name.replace(/[:/\\?%*|"<>]/g, "-").replace(/\s+/g, " ").trim();
+  const cleaned = name
+    .replace(/:\s*/g, " - ") // "CRMdata: Fintech" -> "CRMdata - Fintech"
+    .replace(/[/\\?%*|"<>]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
   return cleaned || "export";
 }
 
@@ -116,12 +120,38 @@ export async function exportPeople(rows: PersonRow[], format: ExportFormat) {
   return fileName;
 }
 
-export async function exportJobResults(rows: ContactRow[], format: ExportFormat, jobName?: string) {
-  const projected = rows.map(projectContactRow);
+// Which dataset(s) a job export should contain.
+export type JobExportDataset = "people" | "contacts" | "both";
+
+export async function exportJobResults(
+  contacts: ContactRow[],
+  people: PersonRow[],
+  format: ExportFormat,
+  jobName?: string,
+  dataset: JobExportDataset = "contacts",
+) {
   const base = jobName ? sanitizeFileName(jobName) : `job_results_${todayStr()}`;
+  if (dataset === "both") {
+    const peopleName = `${base} - people.${format}`;
+    const contactsName = `${base} - contacts.${format}`;
+    const files: Record<string, Uint8Array> = {
+      [peopleName]: rowsToBytes(people.map(projectPersonRow), format),
+      [contactsName]: rowsToBytes(contacts.map(projectContactRow), format),
+    };
+    triggerDownload(new Blob([zipSync(files)], { type: "application/zip" }), `${base}.zip`);
+    await api.recordExport({ export_type: "people", file_format: format, file_name: peopleName, row_count: people.length });
+    await api.recordExport({ export_type: "job_results", file_format: format, file_name: contactsName, row_count: contacts.length });
+    return `${base}.zip`;
+  }
+  if (dataset === "people") {
+    const fileName = `${base}.${format}`;
+    downloadRows(people.map(projectPersonRow), base, format);
+    await api.recordExport({ export_type: "people", file_format: format, file_name: fileName, row_count: people.length });
+    return fileName;
+  }
   const fileName = `${base}.${format}`;
-  downloadRows(projected, base, format);
-  await api.recordExport({ export_type: "job_results", file_format: format, file_name: fileName, row_count: rows.length });
+  downloadRows(contacts.map(projectContactRow), base, format);
+  await api.recordExport({ export_type: "job_results", file_format: format, file_name: fileName, row_count: contacts.length });
   return fileName;
 }
 
@@ -136,9 +166,11 @@ function rowsToBytes(input: Record<string, unknown>[], format: ExportFormat): Ui
 }
 
 // Export many jobs at once: one file per job (named after the job) inside a zip.
+// With dataset "both", each job gets two files: "<name> - people" and "<name> - contacts".
 export async function exportJobsZip(
   jobs: { id: string; name: string }[],
   format: ExportFormat,
+  dataset: JobExportDataset = "contacts",
   onProgress?: (done: number, total: number) => void,
 ) {
   const files: Record<string, Uint8Array> = {};
@@ -146,15 +178,25 @@ export async function exportJobsZip(
   let totalRows = 0;
   for (let i = 0; i < jobs.length; i++) {
     onProgress?.(i, jobs.length);
-    const rows = await api.listContacts({ jobId: jobs[i].id });
     let base = sanitizeFileName(jobs[i].name);
     let n = 2;
     while (usedNames.has(base.toLowerCase())) base = `${sanitizeFileName(jobs[i].name)} (${n++})`;
     usedNames.add(base.toLowerCase());
-    const fileName = `${base}.${format}`;
-    files[fileName] = rowsToBytes(rows.map(projectContactRow), format);
-    totalRows += rows.length;
-    await api.recordExport({ export_type: "job_results", file_format: format, file_name: fileName, row_count: rows.length });
+
+    if (dataset !== "people") {
+      const contacts = await api.listContacts({ jobId: jobs[i].id });
+      const contactsName = `${dataset === "both" ? `${base} - contacts` : base}.${format}`;
+      files[contactsName] = rowsToBytes(contacts.map(projectContactRow), format);
+      totalRows += contacts.length;
+      await api.recordExport({ export_type: "job_results", file_format: format, file_name: contactsName, row_count: contacts.length });
+    }
+    if (dataset !== "contacts") {
+      const people = await api.listPeople({ jobId: jobs[i].id });
+      const peopleName = `${dataset === "both" ? `${base} - people` : base}.${format}`;
+      files[peopleName] = rowsToBytes(people.map(projectPersonRow), format);
+      totalRows += people.length;
+      await api.recordExport({ export_type: "people", file_format: format, file_name: peopleName, row_count: people.length });
+    }
   }
   onProgress?.(jobs.length, jobs.length);
   const zipName = `jobs_export_${todayStr()}.zip`;

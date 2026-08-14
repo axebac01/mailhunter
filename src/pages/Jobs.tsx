@@ -3,10 +3,11 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { ProgressBar } from "@/components/app/ProgressBar";
-import { Plus, Search, Play, Pause, Square, Copy, Trash2, Eye, MoreHorizontal, Briefcase, Download } from "lucide-react";
+import { Plus, Search, Play, Pause, Square, Copy, Trash2, Eye, MoreHorizontal, Briefcase } from "lucide-react";
 import { toast } from "sonner";
 import { api, type JobStatus } from "@/lib/api";
-import { exportJobsZip, type ExportFormat } from "@/lib/exporters";
+import { exportJobsZip, type ExportFormat, type JobExportDataset } from "@/lib/exporters";
+import { JobExportMenu } from "@/components/app/JobExportMenu";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
 import { PageHeader } from "@/components/app/PageHeader";
 import { JobStatusBadge } from "@/components/app/StatusBadge";
@@ -103,14 +104,14 @@ export default function Jobs() {
     });
   };
 
-  const handleBulkExport = async (format: ExportFormat) => {
+  const handleBulkExport = async (dataset: JobExportDataset, format: ExportFormat) => {
     const chosen = jobs.filter((j) => selected.has(j.id));
     if (chosen.length === 0 || exporting) return;
     setExporting(true);
     const toastId = "jobs-bulk-export";
     try {
       toast.loading(`Exporting job 1 of ${chosen.length}…`, { id: toastId });
-      const { zipName, totalRows } = await exportJobsZip(chosen, format, (done, total) => {
+      const { zipName, totalRows } = await exportJobsZip(chosen, format, dataset, (done, total) => {
         if (done < total) toast.loading(`Exporting job ${done + 1} of ${total}…`, { id: toastId });
       });
       toast.success(`Exported ${chosen.length} job${chosen.length === 1 ? "" : "s"} (${fmtNum(totalRows)} rows) to ${zipName}`, { id: toastId });
@@ -166,15 +167,11 @@ export default function Jobs() {
             <Button variant="ghost" size="sm" onClick={clearFilters}>Clear filters</Button>
           )}
           {selected.size > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" disabled={exporting}><Download className="h-4 w-4" /> Export selected ({selected.size})</Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => handleBulkExport("csv")}>CSV — one file per job (.zip)</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleBulkExport("xlsx")}>XLSX — one file per job (.zip)</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <JobExportMenu
+              disabled={exporting}
+              label={`Export selected (${selected.size})`}
+              onExport={handleBulkExport}
+            />
           )}
         </div>
       </Card>
