@@ -518,22 +518,27 @@ Deno.serve(async (req) => {
       return out;
     };
 
-    if (importId) {
-      const rows = await pageAll(() => supabase.from("import_rows")
-        .select("matched_company_id").eq("import_id", importId).not("matched_company_id", "is", null));
-      ids = ids.concat(rows.map((r: any) => r.matched_company_id));
-    }
-    if (jobId) {
-      const { data: imps } = await supabase.from("imports").select("id").eq("crawl_job_id", jobId);
-      const impIds = (imps ?? []).map((i: any) => i.id);
-      if (impIds.length) {
+    // Explicit companyIds = process exactly that set. Only derive the set from
+    // the import/job when no ids were passed — otherwise a wave of ids would
+    // re-scan the whole import and overlap other in-flight runs.
+    if (ids.length === 0) {
+      if (importId) {
         const rows = await pageAll(() => supabase.from("import_rows")
-          .select("matched_company_id").in("import_id", impIds).not("matched_company_id", "is", null));
+          .select("matched_company_id").eq("import_id", importId).not("matched_company_id", "is", null));
         ids = ids.concat(rows.map((r: any) => r.matched_company_id));
       }
-      // Also include companies created directly by this job
-      const byJob = await pageAll(() => supabase.from("companies").select("id").eq("created_by_job_id", jobId));
-      ids = ids.concat(byJob.map((c: any) => c.id));
+      if (jobId) {
+        const { data: imps } = await supabase.from("imports").select("id").eq("crawl_job_id", jobId);
+        const impIds = (imps ?? []).map((i: any) => i.id);
+        if (impIds.length) {
+          const rows = await pageAll(() => supabase.from("import_rows")
+            .select("matched_company_id").in("import_id", impIds).not("matched_company_id", "is", null));
+          ids = ids.concat(rows.map((r: any) => r.matched_company_id));
+        }
+        // Also include companies created directly by this job
+        const byJob = await pageAll(() => supabase.from("companies").select("id").eq("created_by_job_id", jobId));
+        ids = ids.concat(byJob.map((c: any) => c.id));
+      }
     }
     ids = Array.from(new Set(ids.filter(Boolean)));
 
@@ -584,12 +589,16 @@ Deno.serve(async (req) => {
       : allCompanies.filter((c: any) => !c.domain && c.domain_status !== "no_domain_found");
 
     // De-dupe against concurrent resolver invocations: skip companies another
-    // resolver has already touched in the last 90s. Prevents parallel runs
-    // from wasting Firecrawl calls on the same top-of-list rows.
+    // resolver has already touched in the last 90s. This applies to `failed`
+    // retries ONLY — a company still `unresolved` was never actually attempted
+    // (resolveOne always writes a terminal status), so filtering those out
+    // just hides freshly imported companies from the post-import kick and
+    // strands the whole job at "0 companies to resolve".
     if (!reresolveAll && !Array.isArray(companyIds)) {
       const RECENT_MS = 90_000;
       const now = Date.now();
       todo = todo.filter((c: any) => {
+        if (c.domain_status !== "failed") return true;
         if (!c.updated_at) return true;
         return now - new Date(c.updated_at).getTime() > RECENT_MS;
       });

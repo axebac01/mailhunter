@@ -60,8 +60,6 @@ const BATCH_SIZE = 2000;            // rows per pipeline batch
 const COMPANY_CHUNK = 500;
 const ROW_CHUNK = 500;
 const PARALLEL_CHUNKS = 4;
-const RESOLVER_WAVE_SIZE = 200;     // companyIds per resolve-domains-batch invoke
-const RESOLVER_PARALLEL = 3;
 const HARD_ROW_CAP = 1_000_000;
 const STREAM_THRESHOLD_BYTES = 2_000_000; // CSV ≥ 2MB → stream
 const XLSX_WARN_BYTES = 25 * 1024 * 1024;
@@ -295,10 +293,6 @@ interface PipelineCtx {
   processedRows: number;
   matchedRows: number;
   failedRows: number;
-  insertedCompanyIds: string[];            // for resolver enqueue
-  // Resolver wave dispatch
-  resolverWavesQueued: number;
-  resolverInflight: Promise<unknown>[];
 }
 
 type Norm = {
@@ -516,9 +510,6 @@ async function processBatch(ctx: PipelineCtx, rawRows: string[][], col: { name: 
 
   subStep(0.66);
 
-  // Track for resolver enqueue
-  if (newlyInserted.length > 0) ctx.insertedCompanyIds.push(...newlyInserted);
-
   // ---- Build import_rows payloads ----
   type RowStatus = "matched" | "duplicate" | "failed";
   const importRowPayloads = normalized.map<any>((n) => {
@@ -582,35 +573,6 @@ async function processBatch(ctx: PipelineCtx, rawRows: string[][], col: { name: 
   });
 
   return { matched, failed };
-}
-
-// ============================================================================
-// Resolver enqueue (chunked, fire-and-forget)
-// ============================================================================
-
-function enqueueResolverWaves(ctx: PipelineCtx) {
-  if (ctx.insertedCompanyIds.length === 0) return;
-  const ids = ctx.insertedCompanyIds.splice(0, ctx.insertedCompanyIds.length);
-  const waves = chunk(ids, RESOLVER_WAVE_SIZE);
-  const totalParts = waves.length;
-  // Cap parallel invokes; don't await
-  let i = 0;
-  const startNext = () => {
-    while (ctx.resolverInflight.length < RESOLVER_PARALLEL && i < waves.length) {
-      const partIndex = ctx.resolverWavesQueued + i;
-      const ck = waves[i++];
-      const p = supabase.functions.invoke("resolve-domains-batch", {
-        body: { importId: ctx.importId, companyIds: ck, partIndex, totalParts: ctx.resolverWavesQueued + totalParts },
-      }).catch(() => {}).finally(() => {
-        const idx = ctx.resolverInflight.indexOf(p);
-        if (idx >= 0) ctx.resolverInflight.splice(idx, 1);
-        startNext();
-      });
-      ctx.resolverInflight.push(p);
-    }
-  };
-  ctx.resolverWavesQueued += totalParts;
-  startNext();
 }
 
 // ============================================================================
@@ -686,9 +648,6 @@ export async function runImport(args: RunImportArgs): Promise<string> {
     processedRows: 0,
     matchedRows: 0,
     failedRows: 0,
-    insertedCompanyIds: [],
-    resolverWavesQueued: 0,
-    resolverInflight: [],
   };
 
   const controller = { cancelled: false };
@@ -736,10 +695,6 @@ export async function runImport(args: RunImportArgs): Promise<string> {
       failed_rows: ctx.failedRows,
       total_rows: ctx.totalRows,
     }).catch(() => {});
-
-    if (ctx.insertedCompanyIds.length >= RESOLVER_WAVE_SIZE * 2) {
-      enqueueResolverWaves(ctx);
-    }
   };
 
   let cancelledMidRun = false;
@@ -773,8 +728,6 @@ export async function runImport(args: RunImportArgs): Promise<string> {
       return ctx.importId;
     }
 
-    enqueueResolverWaves(ctx);
-
     await api.updateImport(ctx.importId, {
       status: ctx.processedRows > 0 && ctx.failedRows === ctx.processedRows ? "failed" : "completed",
       processed_rows: ctx.processedRows,
@@ -785,9 +738,11 @@ export async function runImport(args: RunImportArgs): Promise<string> {
 
     emit("done", ctx.processedRows, ctx.processedRows);
 
-    if (ctx.resolverWavesQueued === 0) {
-      supabase.functions.invoke("resolve-domains-batch", { body: { importId: ctx.importId } }).catch(() => {});
-    }
+    // Single server-side kick: the resolver chains itself via time-budget
+    // continuations until the whole import is resolved — no browser needed.
+    supabase.functions.invoke("resolve-domains-batch", {
+      body: { importId: ctx.importId, jobId: options.attachJobId ?? undefined },
+    }).catch(() => {});
 
     return ctx.importId;
   } finally {
@@ -833,9 +788,6 @@ export async function restartImport(
     processedRows: 0,
     matchedRows: 0,
     failedRows: 0,
-    insertedCompanyIds: [],
-    resolverWavesQueued: 0,
-    resolverInflight: [],
   };
 
   const emit = (phase: ImportPhase) => onProgress?.(ctx.processedRows, ctx.totalRows, phase);
@@ -911,13 +863,7 @@ export async function restartImport(
         failed_rows: ctx.failedRows,
         total_rows: ctx.totalRows,
       }).catch(() => {});
-
-      if (ctx.insertedCompanyIds.length >= RESOLVER_WAVE_SIZE * 2) {
-        enqueueResolverWaves(ctx);
-      }
     }
-
-    enqueueResolverWaves(ctx);
 
     await api.updateImport(importId, {
       status: ctx.processedRows > 0 && ctx.failedRows === ctx.processedRows ? "failed" : "completed",
@@ -929,9 +875,9 @@ export async function restartImport(
 
     emit("done");
 
-    if (ctx.resolverWavesQueued === 0) {
-      supabase.functions.invoke("resolve-domains-batch", { body: { importId } }).catch(() => {});
-    }
+    // Single server-side kick: the resolver chains itself via time-budget
+    // continuations until the whole import is resolved — no browser needed.
+    supabase.functions.invoke("resolve-domains-batch", { body: { importId } }).catch(() => {});
 
     return importId;
   } finally {
