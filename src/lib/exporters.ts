@@ -1,10 +1,17 @@
 import * as XLSX from "xlsx";
+import { zipSync, strToU8 } from "fflate";
 import { api } from "@/lib/api";
 import type { ContactRow, PersonRow } from "@/lib/api";
 
 export type ExportFormat = "csv" | "xlsx";
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// Make a string safe to use as a file name on any OS.
+export function sanitizeFileName(name: string): string {
+  const cleaned = name.replace(/[:/\\?%*|"<>]/g, "-").replace(/\s+/g, " ").trim();
+  return cleaned || "export";
+}
 
 // Strict allow-list of fields per the brief.
 export const CONTACT_EXPORT_FIELDS = [
