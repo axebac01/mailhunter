@@ -9,7 +9,11 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 
 // Make a string safe to use as a file name on any OS.
 export function sanitizeFileName(name: string): string {
-  const cleaned = name.replace(/[:/\\?%*|"<>]/g, "-").replace(/\s+/g, " ").trim();
+  const cleaned = name
+    .replace(/:\s*/g, " - ") // "CRMdata: Fintech" -> "CRMdata - Fintech"
+    .replace(/[/\\?%*|"<>]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
   return cleaned || "export";
 }
 
