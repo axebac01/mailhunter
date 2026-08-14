@@ -162,9 +162,11 @@ function rowsToBytes(input: Record<string, unknown>[], format: ExportFormat): Ui
 }
 
 // Export many jobs at once: one file per job (named after the job) inside a zip.
+// With dataset "both", each job gets two files: "<name> - people" and "<name> - contacts".
 export async function exportJobsZip(
   jobs: { id: string; name: string }[],
   format: ExportFormat,
+  dataset: JobExportDataset = "contacts",
   onProgress?: (done: number, total: number) => void,
 ) {
   const files: Record<string, Uint8Array> = {};
@@ -172,15 +174,25 @@ export async function exportJobsZip(
   let totalRows = 0;
   for (let i = 0; i < jobs.length; i++) {
     onProgress?.(i, jobs.length);
-    const rows = await api.listContacts({ jobId: jobs[i].id });
     let base = sanitizeFileName(jobs[i].name);
     let n = 2;
     while (usedNames.has(base.toLowerCase())) base = `${sanitizeFileName(jobs[i].name)} (${n++})`;
     usedNames.add(base.toLowerCase());
-    const fileName = `${base}.${format}`;
-    files[fileName] = rowsToBytes(rows.map(projectContactRow), format);
-    totalRows += rows.length;
-    await api.recordExport({ export_type: "job_results", file_format: format, file_name: fileName, row_count: rows.length });
+
+    if (dataset !== "people") {
+      const contacts = await api.listContacts({ jobId: jobs[i].id });
+      const contactsName = `${dataset === "both" ? `${base} - contacts` : base}.${format}`;
+      files[contactsName] = rowsToBytes(contacts.map(projectContactRow), format);
+      totalRows += contacts.length;
+      await api.recordExport({ export_type: "job_results", file_format: format, file_name: contactsName, row_count: contacts.length });
+    }
+    if (dataset !== "contacts") {
+      const people = await api.listPeople({ jobId: jobs[i].id });
+      const peopleName = `${dataset === "both" ? `${base} - people` : base}.${format}`;
+      files[peopleName] = rowsToBytes(people.map(projectPersonRow), format);
+      totalRows += people.length;
+      await api.recordExport({ export_type: "people", file_format: format, file_name: peopleName, row_count: people.length });
+    }
   }
   onProgress?.(jobs.length, jobs.length);
   const zipName = `jobs_export_${todayStr()}.zip`;

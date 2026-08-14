@@ -6,14 +6,14 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { api, type JobStatus, type JobMetaJson } from "@/lib/api";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
-import { exportJobResults } from "@/lib/exporters";
+import { exportJobResults, type JobExportDataset } from "@/lib/exporters";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { JobStatusBadge } from "@/components/app/StatusBadge";
 import { ProgressBar } from "@/components/app/ProgressBar";
 import { KpiCard } from "@/components/app/KpiCard";
 import { EmptyState } from "@/components/app/EmptyState";
-import { ExportButton } from "@/components/app/ExportButton";
+import { JobExportMenu } from "@/components/app/JobExportMenu";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -169,8 +169,8 @@ export default function JobDetail() {
     </div>
   );
 
-  const handleExport = async (_scope: "all"|"filtered"|"selected", format: "csv"|"xlsx") => {
-    const name = await exportJobResults(jobContacts, format, j.name);
+  const handleExport = async (dataset: JobExportDataset, format: "csv"|"xlsx") => {
+    const name = await exportJobResults(jobContacts, jobPeople, format, j.name, dataset);
     qc.invalidateQueries({ queryKey: ["kpis"] });
     toast.success(`Exported ${name}`);
   };
@@ -240,7 +240,7 @@ export default function JobDetail() {
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
-            <ExportButton onExport={handleExport} disableSelected />
+            <JobExportMenu onExport={handleExport} />
           </>
         }
       />
