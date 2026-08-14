@@ -170,7 +170,7 @@ export default function JobDetail() {
   );
 
   const handleExport = async (_scope: "all"|"filtered"|"selected", format: "csv"|"xlsx") => {
-    const name = await exportJobResults(jobContacts, format);
+    const name = await exportJobResults(jobContacts, format, j.name);
     qc.invalidateQueries({ queryKey: ["kpis"] });
     toast.success(`Exported ${name}`);
   };
