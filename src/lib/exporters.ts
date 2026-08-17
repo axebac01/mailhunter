@@ -80,6 +80,62 @@ export function projectPersonRow(p: PersonRow) {
   };
 }
 
+// --- People export filtering (title groups + max-one-per-company) ---
+
+export interface TitleGroup {
+  id: string;
+  label: string;
+  re: RegExp;
+}
+
+// Preset title groups; case-insensitive matching against the raw role_title
+// (values are messy free text like "Partner, Corporate Finance" or "CEO/VD").
+export const TITLE_GROUPS: TitleGroup[] = [
+  { id: "ceo", label: "CEO / VD / Managing Director", re: /\b(ceo|c\.e\.o|vd|verkst[äa]llande\s+direkt[öo]r|managing\s+director|md|president)\b/i },
+  { id: "cfo", label: "CFO / Ekonomichef", re: /\b(cfo|chief\s+financial\s+officer|ekonomichef|ekonomidirekt[öo]r|finance\s+director|head\s+of\s+finance)\b/i },
+  { id: "clevel", label: "COO / CTO / CMO & other C-level", re: /\b(coo|cto|cmo|cio|cro|cco|chief\s+\w+\s+officer)\b/i },
+  { id: "founder", label: "Founder / Grundare", re: /\b(founder|co[-\s]?founder|grundare)\b/i },
+  { id: "owner", label: "Owner / Ägare / Delägare", re: /\b(owner|co[-\s]?owner|[äa]gare|del[äa]gare)\b/i },
+  { id: "partner", label: "Partner", re: /\bpartner\b/i },
+  { id: "chair", label: "Chairman / Styrelseordförande", re: /\b(chairman|chairwoman|styrelseordf[öo]rande)\b/i },
+  { id: "head", label: "Head of / Director / VP", re: /\b(head\s+of|director|vp|vice\s+president)\b/i },
+];
+
+export interface PeopleFilterOptions {
+  /** Selected title group ids. Empty = no title filtering (everyone). */
+  titleGroupIds: string[];
+  /** Include people with empty/null role_title (only relevant when titleGroupIds is non-empty). */
+  includeUntitled: boolean;
+  /** Keep only the best-ranked person per company. */
+  maxOnePerCompany: boolean;
+}
+
+function personRankScore(p: PersonRow): number {
+  const conf = p.emailConfidence === "extracted" ? 3 : p.emailConfidence === "matched_high" ? 2 : p.emailConfidence === "matched_low" ? 1 : 0;
+  return (p.isDecisionMaker ? 100 : 0) + (p.email ? 10 : 0) + conf;
+}
+
+export function filterPeopleForExport(people: PersonRow[], opts: PeopleFilterOptions): PersonRow[] {
+  let rows = people;
+  if (opts.titleGroupIds.length > 0) {
+    const groups = TITLE_GROUPS.filter((g) => opts.titleGroupIds.includes(g.id));
+    rows = rows.filter((p) => {
+      const role = (p.roleTitle ?? "").trim();
+      if (!role) return opts.includeUntitled;
+      return groups.some((g) => g.re.test(role));
+    });
+  }
+  if (opts.maxOnePerCompany) {
+    const best = new Map<string, PersonRow>();
+    for (const p of rows) {
+      const cur = best.get(p.companyId);
+      if (!cur || personRankScore(p) > personRankScore(cur)) best.set(p.companyId, p);
+    }
+    rows = Array.from(best.values());
+  }
+  return rows;
+}
+
 export function downloadRows(rows: Record<string, unknown>[], filename: string, format: ExportFormat = "csv") {
   if (rows.length === 0) rows = [{ note: "No rows to export" }];
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -129,24 +185,26 @@ export async function exportJobResults(
   format: ExportFormat,
   jobName?: string,
   dataset: JobExportDataset = "contacts",
+  peopleFilter?: PeopleFilterOptions,
 ) {
   const base = jobName ? sanitizeFileName(jobName) : `job_results_${todayStr()}`;
+  const filteredPeople = peopleFilter ? filterPeopleForExport(people, peopleFilter) : people;
   if (dataset === "both") {
     const peopleName = `${base} - people.${format}`;
     const contactsName = `${base} - contacts.${format}`;
     const files: Record<string, Uint8Array> = {
-      [peopleName]: rowsToBytes(people.map(projectPersonRow), format),
+      [peopleName]: rowsToBytes(filteredPeople.map(projectPersonRow), format),
       [contactsName]: rowsToBytes(contacts.map(projectContactRow), format),
     };
     triggerDownload(new Blob([zipSync(files)], { type: "application/zip" }), `${base}.zip`);
-    await api.recordExport({ export_type: "people", file_format: format, file_name: peopleName, row_count: people.length });
+    await api.recordExport({ export_type: "people", file_format: format, file_name: peopleName, row_count: filteredPeople.length });
     await api.recordExport({ export_type: "job_results", file_format: format, file_name: contactsName, row_count: contacts.length });
     return `${base}.zip`;
   }
   if (dataset === "people") {
     const fileName = `${base}.${format}`;
-    downloadRows(people.map(projectPersonRow), base, format);
-    await api.recordExport({ export_type: "people", file_format: format, file_name: fileName, row_count: people.length });
+    downloadRows(filteredPeople.map(projectPersonRow), base, format);
+    await api.recordExport({ export_type: "people", file_format: format, file_name: fileName, row_count: filteredPeople.length });
     return fileName;
   }
   const fileName = `${base}.${format}`;
@@ -172,6 +230,7 @@ export async function exportJobsZip(
   format: ExportFormat,
   dataset: JobExportDataset = "contacts",
   onProgress?: (done: number, total: number) => void,
+  peopleFilter?: PeopleFilterOptions,
 ) {
   const files: Record<string, Uint8Array> = {};
   const usedNames = new Set<string>();
@@ -191,7 +250,8 @@ export async function exportJobsZip(
       await api.recordExport({ export_type: "job_results", file_format: format, file_name: contactsName, row_count: contacts.length });
     }
     if (dataset !== "contacts") {
-      const people = await api.listPeople({ jobId: jobs[i].id });
+      const raw = await api.listPeople({ jobId: jobs[i].id });
+      const people = peopleFilter ? filterPeopleForExport(raw, peopleFilter) : raw;
       const peopleName = `${dataset === "both" ? `${base} - people` : base}.${format}`;
       files[peopleName] = rowsToBytes(people.map(projectPersonRow), format);
       totalRows += people.length;

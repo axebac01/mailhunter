@@ -116,6 +116,7 @@ export interface PersonRow {
   jobId: string | null;
   jobName: string | null;
   importId: string | null;
+  isDecisionMaker: boolean;
 }
 
 export interface ImportRow {
@@ -280,6 +281,7 @@ type PersonJoined = {
   company_id: string;
   crawl_job_id: string | null;
   import_id: string | null;
+  is_decision_maker: boolean;
   companies: { name: string; domain: string | null; country: string | null; industry: string | null } | null;
   crawl_jobs: { name: string } | null;
 };
@@ -302,6 +304,7 @@ const mapPerson = (r: PersonJoined): PersonRow => ({
   jobId: r.crawl_job_id,
   jobName: r.crawl_jobs?.name ?? null,
   importId: r.import_id,
+  isDecisionMaker: r.is_decision_maker ?? false,
 });
 
 const mapLog = (r: DB["crawl_logs"]["Row"]): CrawlLogRow => ({
@@ -455,7 +458,7 @@ export const api = {
     const buildQuery = (from: number, to: number) => {
       let q = supabase
         .from("contact_people")
-        .select("id, full_name, role_title, department, email, email_confidence, phone, source_url, found_at, company_id, crawl_job_id, import_id, companies(name, domain, country, industry), crawl_jobs(name)")
+        .select("id, full_name, role_title, department, email, email_confidence, phone, source_url, found_at, company_id, crawl_job_id, import_id, is_decision_maker, companies(name, domain, country, industry), crawl_jobs(name)")
         .order("found_at", { ascending: false });
       if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
       if (opts.importId) q = q.eq("import_id", opts.importId);

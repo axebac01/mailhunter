@@ -10,6 +10,7 @@
 //   4. Match-pass: link extracted person_high emails to people by name (firstname.lastname@).
 //      Unmatched person_high → synthesize person row with derived name + matched_high.
 // Hard cap: 6 Firecrawl calls + 2 LLM-extracts per company.
+// People cap: max 5 ranked people per company (+ max 3 synthesized from emails).
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 
@@ -562,7 +563,11 @@ Deno.serve(async (req) => {
       if (seen.has(k)) return false;
       seen.add(k); return true;
     });
-    const ranked = rankPeople(dedup);
+    // Cap persisted people per company — large team pages otherwise flood a
+    // company with dozens of rows. Ranked: decision-makers first, email first.
+    const MAX_PEOPLE_PER_COMPANY = 5;
+    const MAX_SYNTHESIZED_PER_COMPANY = 3;
+    const ranked = rankPeople(dedup).slice(0, MAX_PEOPLE_PER_COMPANY);
 
     // Match-pass: link extracted person emails to people by name
     const personEmails = Array.from(acc.emails).filter((e) => {
@@ -608,7 +613,9 @@ Deno.serve(async (req) => {
 
     // Synthesize person rows for unmatched person_high emails (no name on page, but we have the address)
     if (opt.personNames) {
+      let synthesizedCount = 0;
       for (const e of personEmails) {
+        if (synthesizedCount >= MAX_SYNTHESIZED_PER_COMPANY) break;
         if (consumedEmails.has(e)) continue;
         if (classifyEmail(e) !== "person_high") continue;
         const lt = emailLocalTokens(e);
@@ -622,7 +629,7 @@ Deno.serve(async (req) => {
           email: e,
           email_confidence: "matched_high",
         });
-        if (!error) { inserted.people++; inserted.person_emails++; inserted.synthesized++; }
+        if (!error) { inserted.people++; inserted.person_emails++; inserted.synthesized++; synthesizedCount++; }
       }
     }
 
