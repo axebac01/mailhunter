@@ -107,7 +107,7 @@ export default function Jobs() {
     });
   };
 
-  const handleBulkExport = async (dataset: JobExportDataset, format: ExportFormat) => {
+  const runBulkExport = async (dataset: JobExportDataset, format: ExportFormat, filter?: PeopleFilterOptions) => {
     const chosen = jobs.filter((j) => selected.has(j.id));
     if (chosen.length === 0 || exporting) return;
     setExporting(true);
@@ -116,13 +116,20 @@ export default function Jobs() {
       toast.loading(`Exporting job 1 of ${chosen.length}…`, { id: toastId });
       const { zipName, totalRows } = await exportJobsZip(chosen, format, dataset, (done, total) => {
         if (done < total) toast.loading(`Exporting job ${done + 1} of ${total}…`, { id: toastId });
-      });
+      }, filter);
       toast.success(`Exported ${chosen.length} job${chosen.length === 1 ? "" : "s"} (${fmtNum(totalRows)} rows) to ${zipName}`, { id: toastId });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Export failed", { id: toastId });
     } finally {
       setExporting(false);
     }
+  };
+
+  const handleBulkExport = (dataset: JobExportDataset, format: ExportFormat) => {
+    if (exporting) return;
+    // Company contacts export directly; datasets containing people get options first.
+    if (dataset === "contacts") { void runBulkExport(dataset, format); return; }
+    setPeopleExport({ dataset, format });
   };
 
   return (
