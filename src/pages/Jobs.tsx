@@ -6,8 +6,9 @@ import { ProgressBar } from "@/components/app/ProgressBar";
 import { Plus, Search, Play, Pause, Square, Copy, Trash2, Eye, MoreHorizontal, Briefcase } from "lucide-react";
 import { toast } from "sonner";
 import { api, type JobStatus } from "@/lib/api";
-import { exportJobsZip, type ExportFormat, type JobExportDataset } from "@/lib/exporters";
+import { exportJobsZip, type ExportFormat, type JobExportDataset, type PeopleFilterOptions } from "@/lib/exporters";
 import { JobExportMenu } from "@/components/app/JobExportMenu";
+import { PeopleExportOptionsDialog } from "@/components/app/PeopleExportOptionsDialog";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
 import { PageHeader } from "@/components/app/PageHeader";
 import { JobStatusBadge } from "@/components/app/StatusBadge";
@@ -38,6 +39,8 @@ export default function Jobs() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
+  // Pending people-export request (waiting for options in the dialog)
+  const [peopleExport, setPeopleExport] = useState<{ dataset: JobExportDataset; format: ExportFormat } | null>(null);
 
   useEffect(() => {
     const channel = supabase
@@ -104,7 +107,7 @@ export default function Jobs() {
     });
   };
 
-  const handleBulkExport = async (dataset: JobExportDataset, format: ExportFormat) => {
+  const runBulkExport = async (dataset: JobExportDataset, format: ExportFormat, filter?: PeopleFilterOptions) => {
     const chosen = jobs.filter((j) => selected.has(j.id));
     if (chosen.length === 0 || exporting) return;
     setExporting(true);
@@ -113,13 +116,20 @@ export default function Jobs() {
       toast.loading(`Exporting job 1 of ${chosen.length}…`, { id: toastId });
       const { zipName, totalRows } = await exportJobsZip(chosen, format, dataset, (done, total) => {
         if (done < total) toast.loading(`Exporting job ${done + 1} of ${total}…`, { id: toastId });
-      });
+      }, filter);
       toast.success(`Exported ${chosen.length} job${chosen.length === 1 ? "" : "s"} (${fmtNum(totalRows)} rows) to ${zipName}`, { id: toastId });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Export failed", { id: toastId });
     } finally {
       setExporting(false);
     }
+  };
+
+  const handleBulkExport = (dataset: JobExportDataset, format: ExportFormat) => {
+    if (exporting) return;
+    // Company contacts export directly; datasets containing people get options first.
+    if (dataset === "contacts") { void runBulkExport(dataset, format); return; }
+    setPeopleExport({ dataset, format });
   };
 
   return (
@@ -175,6 +185,16 @@ export default function Jobs() {
           )}
         </div>
       </Card>
+
+      <PeopleExportOptionsDialog
+        open={!!peopleExport}
+        onOpenChange={(o) => { if (!o) setPeopleExport(null); }}
+        onConfirm={(opts) => {
+          const p = peopleExport;
+          setPeopleExport(null);
+          if (p) void runBulkExport(p.dataset, p.format, opts);
+        }}
+      />
 
       <Card className="overflow-hidden">
         {isLoading ? (

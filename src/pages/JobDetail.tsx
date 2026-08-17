@@ -6,7 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { api, type JobStatus, type JobMetaJson } from "@/lib/api";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
-import { exportJobResults, type JobExportDataset } from "@/lib/exporters";
+import { exportJobResults, type ExportFormat, type JobExportDataset, type PeopleFilterOptions } from "@/lib/exporters";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { JobStatusBadge } from "@/components/app/StatusBadge";
@@ -14,6 +14,7 @@ import { ProgressBar } from "@/components/app/ProgressBar";
 import { KpiCard } from "@/components/app/KpiCard";
 import { EmptyState } from "@/components/app/EmptyState";
 import { JobExportMenu } from "@/components/app/JobExportMenu";
+import { PeopleExportOptionsDialog } from "@/components/app/PeopleExportOptionsDialog";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -160,6 +161,9 @@ export default function JobDetail() {
     onError: (e: Error) => toast.error(e?.message ?? "Resume failed"),
   });
 
+  // Pending people-export request (waiting for options in the dialog)
+  const [peopleExport, setPeopleExport] = useState<{ dataset: JobExportDataset; format: ExportFormat } | null>(null);
+
   if (job.isLoading) return <div className="p-6">Loading…</div>;
   const j = job.data;
   if (!j) return (
@@ -169,10 +173,16 @@ export default function JobDetail() {
     </div>
   );
 
-  const handleExport = async (dataset: JobExportDataset, format: "csv"|"xlsx") => {
-    const name = await exportJobResults(jobContacts, jobPeople, format, j.name, dataset);
+  const runExport = async (dataset: JobExportDataset, format: ExportFormat, filter?: PeopleFilterOptions) => {
+    const name = await exportJobResults(jobContacts, jobPeople, format, j.name, dataset, filter);
     qc.invalidateQueries({ queryKey: ["kpis"] });
     toast.success(`Exported ${name}`);
+  };
+
+  const handleExport = (dataset: JobExportDataset, format: ExportFormat) => {
+    // Company contacts export directly; datasets containing people get options first.
+    if (dataset === "contacts") { void runExport(dataset, format); return; }
+    setPeopleExport({ dataset, format });
   };
 
   const personEmailCount = jobContacts.filter((c) => c.contactType === "person_email").length;
@@ -243,6 +253,17 @@ export default function JobDetail() {
             <JobExportMenu onExport={handleExport} />
           </>
         }
+      />
+
+      <PeopleExportOptionsDialog
+        open={!!peopleExport}
+        onOpenChange={(o) => { if (!o) setPeopleExport(null); }}
+        people={jobPeople}
+        onConfirm={(opts) => {
+          const p = peopleExport;
+          setPeopleExport(null);
+          if (p) void runExport(p.dataset, p.format, opts);
+        }}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">

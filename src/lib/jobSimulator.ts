@@ -120,14 +120,20 @@ async function tick(jobId: string) {
     batchInvoked.delete(jobId);
     return;
   }
-  if (job.progress >= 100 || job.companiesFound >= job.maxCompanies) {
-    await api.updateJobStatus(jobId, "completed");
-    stopSimulator(jobId);
+
+  // Uploaded jobs are driven entirely server-side by scrape-emails-batch and
+  // complete only when the server marks them done. Never auto-complete here:
+  // companies_found grows past max_companies mid-scrape for uploaded jobs,
+  // which would wrongly mark them completed (and halt the server worker).
+  if (job.sourceType === "uploaded") {
+    await maybeKickOffBatch(jobId);
     return;
   }
 
-  if (job.sourceType === "uploaded") {
-    await maybeKickOffBatch(jobId);
+  // Demo jobs (industry_country) only: stop when the synthetic pool is full.
+  if (job.progress >= 100 || job.companiesFound >= job.maxCompanies) {
+    await api.updateJobStatus(jobId, "completed");
+    stopSimulator(jobId);
     return;
   }
 
