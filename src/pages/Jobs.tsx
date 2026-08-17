@@ -6,8 +6,9 @@ import { ProgressBar } from "@/components/app/ProgressBar";
 import { Plus, Search, Play, Pause, Square, Copy, Trash2, Eye, MoreHorizontal, Briefcase } from "lucide-react";
 import { toast } from "sonner";
 import { api, type JobStatus } from "@/lib/api";
-import { exportJobsZip, type ExportFormat, type JobExportDataset } from "@/lib/exporters";
+import { exportJobsZip, type ExportFormat, type JobExportDataset, type PeopleFilterOptions } from "@/lib/exporters";
 import { JobExportMenu } from "@/components/app/JobExportMenu";
+import { PeopleExportOptionsDialog } from "@/components/app/PeopleExportOptionsDialog";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
 import { PageHeader } from "@/components/app/PageHeader";
 import { JobStatusBadge } from "@/components/app/StatusBadge";
@@ -38,6 +39,8 @@ export default function Jobs() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
+  // Pending people-export request (waiting for options in the dialog)
+  const [peopleExport, setPeopleExport] = useState<{ dataset: JobExportDataset; format: ExportFormat } | null>(null);
 
   useEffect(() => {
     const channel = supabase
@@ -175,6 +178,16 @@ export default function Jobs() {
           )}
         </div>
       </Card>
+
+      <PeopleExportOptionsDialog
+        open={!!peopleExport}
+        onOpenChange={(o) => { if (!o) setPeopleExport(null); }}
+        onConfirm={(opts) => {
+          const p = peopleExport;
+          setPeopleExport(null);
+          if (p) void runBulkExport(p.dataset, p.format, opts);
+        }}
+      />
 
       <Card className="overflow-hidden">
         {isLoading ? (
