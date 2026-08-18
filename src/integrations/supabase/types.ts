@@ -70,6 +70,8 @@ export type Database = {
           department: string | null
           email: string | null
           email_confidence: string | null
+          email_status: string | null
+          email_type: string | null
           found_at: string
           full_name: string
           id: string
@@ -87,6 +89,8 @@ export type Database = {
           department?: string | null
           email?: string | null
           email_confidence?: string | null
+          email_status?: string | null
+          email_type?: string | null
           found_at?: string
           full_name: string
           id?: string
@@ -104,6 +108,8 @@ export type Database = {
           department?: string | null
           email?: string | null
           email_confidence?: string | null
+          email_status?: string | null
+          email_type?: string | null
           found_at?: string
           full_name?: string
           id?: string
@@ -374,6 +380,24 @@ export type Database = {
           host?: string
           id?: string
           reason?: string | null
+        }
+        Relationships: []
+      }
+      domain_mx_cache: {
+        Row: {
+          checked_at: string
+          has_mx: boolean
+          host: string
+        }
+        Insert: {
+          checked_at?: string
+          has_mx?: boolean
+          host: string
+        }
+        Update: {
+          checked_at?: string
+          has_mx?: boolean
+          host?: string
         }
         Relationships: []
       }

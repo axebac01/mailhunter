@@ -5,14 +5,16 @@ import { Badge } from "@/components/ui/badge";
 import { fmtRelative } from "@/lib/format";
 import type { PersonRow } from "@/lib/api";
 
-function emailBadge(conf: PersonRow["emailConfidence"]) {
-  if (!conf) return null;
-  const label =
-    conf === "extracted" ? "från sida" :
-    conf === "matched_high" ? "matchad" :
-    "svag match";
-  const variant = conf === "matched_low" ? "outline" : "secondary";
-  return <Badge variant={variant} className="ml-2 text-[10px] px-1.5 py-0">{label}</Badge>;
+function emailBadge(p: PersonRow) {
+  if (!p.email) return null;
+  const statusLabel = p.emailStatus === "verified" ? "verifierad" : "overifierad";
+  const typeLabel = p.emailType === "role" ? "roll" : null;
+  return (
+    <>
+      <Badge variant={p.emailStatus === "verified" ? "secondary" : "outline"} className="ml-2 text-[10px] px-1.5 py-0">{statusLabel}</Badge>
+      {typeLabel && <Badge variant="outline" className="ml-1 text-[10px] px-1.5 py-0">{typeLabel}</Badge>}
+    </>
+  );
 }
 
 export function JobPeopleTab({ people }: { people: PersonRow[] }) {
@@ -27,7 +29,7 @@ export function JobPeopleTab({ people }: { people: PersonRow[] }) {
                 <TableCell className="font-medium">{p.fullName}</TableCell>
                 <TableCell>{p.roleTitle ?? "—"}</TableCell>
                 <TableCell className="font-mono text-xs">
-                  {p.email ? <>{p.email}{emailBadge(p.emailConfidence)}</> : <span className="text-muted-foreground">—</span>}
+                  {p.email ? <>{p.email}{emailBadge(p)}</> : <span className="text-muted-foreground">—</span>}
                 </TableCell>
                 <TableCell className="font-mono text-xs">{p.phone ?? <span className="text-muted-foreground">—</span>}</TableCell>
                 <TableCell>{p.companyName}</TableCell>
