@@ -111,7 +111,10 @@ export interface PersonRow {
   roleTitle: string | null;
   department: string | null;
   email: string | null;
-  emailConfidence: "extracted" | "matched_high" | "matched_low" | null;
+  // "extracted" = the address was found verbatim on the company's own website.
+  emailConfidence: "extracted" | null;
+  emailType: "personal" | "role" | null;
+  emailStatus: "verified" | "unverified" | null;
   phone: string | null;
   sourceUrl: string;
   foundAt: string;
@@ -279,6 +282,8 @@ type PersonJoined = {
   department: string | null;
   email: string | null;
   email_confidence: string | null;
+  email_type: string | null;
+  email_status: string | null;
   phone: string | null;
   source_url: string;
   found_at: string;
@@ -301,7 +306,9 @@ const mapPerson = (r: PersonJoined): PersonRow => ({
   roleTitle: r.role_title,
   department: r.department,
   email: r.email,
-  emailConfidence: (r.email_confidence as PersonRow["emailConfidence"]) ?? null,
+  emailConfidence: r.email_confidence === "extracted" ? "extracted" : null,
+  emailType: r.email_type === "role" ? "role" : r.email_type === "personal" ? "personal" : null,
+  emailStatus: r.email_status === "verified" ? "verified" : r.email_status === "unverified" ? "unverified" : null,
   phone: r.phone,
   sourceUrl: r.source_url,
   foundAt: r.found_at,
@@ -464,7 +471,7 @@ export const api = {
     const buildQuery = (from: number, to: number) => {
       let q = supabase
         .from("contact_people")
-        .select("id, full_name, role_title, department, email, email_confidence, phone, source_url, found_at, company_id, crawl_job_id, import_id, is_decision_maker, companies(name, domain, country, industry), crawl_jobs(name)")
+        .select("id, full_name, role_title, department, email, email_confidence, email_type, email_status, phone, source_url, found_at, company_id, crawl_job_id, import_id, is_decision_maker, companies(name, domain, country, industry), crawl_jobs(name)")
         .order("found_at", { ascending: false });
       if (opts.jobId) q = q.eq("crawl_job_id", opts.jobId);
       if (opts.importId) q = q.eq("import_id", opts.importId);
