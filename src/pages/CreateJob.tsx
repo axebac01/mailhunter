@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { FileText, Globe2, Upload, Loader2 } from "lucide-react";
 import { api, type Weekday } from "@/lib/api";
 import { autoMap, parseFile, runImport } from "@/lib/importPipeline";
+import { TITLE_GROUPS } from "@/lib/exporters";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { Button } from "@/components/ui/button";
@@ -96,6 +97,7 @@ export default function CreateJob() {
     startTime: "09:00", endTime: "18:00",
     collectGenericEmails: true, collectPersonEmails: true, collectPhones: true, collectContactForms: true,
     collectPersonNames: true, collectPersonRoles: true, collectDepartments: false,
+    targetRoles: [] as string[], onePersonPerCompany: false,
     deduplicate: true, notes: "",
   });
   const update = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
@@ -160,9 +162,11 @@ export default function CreateJob() {
         include_person_emails: form.collectPersonEmails,
         include_phones: form.collectPhones,
         include_contact_forms: form.collectContactForms,
-        include_contact_person_names: form.collectPersonNames,
+        include_contact_person_names: form.collectPersonNames || form.targetRoles.length > 0,
         include_contact_person_roles: form.collectPersonRoles,
         include_departments: form.collectDepartments,
+        target_roles: form.targetRoles.length > 0 ? form.targetRoles : null,
+        one_person_per_company: form.onePersonPerCompany,
         deduplicate: form.deduplicate,
         notes: form.notes || null,
         status,
@@ -336,6 +340,46 @@ export default function CreateJob() {
             <div>
               <Label htmlFor="max">Max companies *</Label>
               <Input id="max" type="number" min={1} className="mt-1.5" value={form.maxCompanies} onChange={(e) => update("maxCompanies", parseInt(e.target.value) || 0)} />
+            </div>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Target roles" description="Pick the roles this job should hunt — the scraper stops at the first match with an email">
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {TITLE_GROUPS.map((g) => {
+                const checked = form.targetRoles.includes(g.id);
+                return (
+                  <div key={g.id} className="flex items-center gap-2">
+                    <Checkbox
+                      id={`target-${g.id}`}
+                      checked={checked}
+                      onCheckedChange={(v) =>
+                        update("targetRoles", v === true ? [...form.targetRoles, g.id] : form.targetRoles.filter((r) => r !== g.id))
+                      }
+                    />
+                    <Label htmlFor={`target-${g.id}`} className="text-sm font-normal cursor-pointer">{g.label}</Label>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              With roles selected, the scraper stops early once a matching person with an email is found (saves credits).
+              If no match is found, the best decision-makers are kept as fallback. No selection = collect all leadership roles.
+            </p>
+            <div className="flex items-start gap-2 border-t border-border pt-3">
+              <Checkbox
+                id="one-per-company"
+                className="mt-0.5"
+                checked={form.onePersonPerCompany}
+                onCheckedChange={(v) => update("onePersonPerCompany", v === true)}
+              />
+              <div>
+                <Label htmlFor="one-per-company" className="text-sm font-normal cursor-pointer">One person per company</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Save only the single best person per company (target role first, then decision-maker with email) instead of up to 5.
+                </p>
+              </div>
             </div>
           </div>
         </SectionCard>

@@ -530,7 +530,7 @@ Deno.serve(async (req) => {
     // ──── Tier 2: leadership/team pages with JSON-extract (always when personNames) ────
     // Run on every company that opted in to personNames — this is how we get names + roles.
     // Cap: up to 2 distinct leadership pages per company (e.g. /ledning + /styrelse).
-    if (opt.personNames && remaining() > 0 && counter.llmCalls < 2) {
+    if ((opt.personNames || opt.targetRoles.length > 0) && remaining() > 0 && counter.llmCalls < 2) {
       const leadershipCandidates = LEADERSHIP_PATHS.map((p) => `https://${domain}${p}`);
       const probes = await Promise.all(leadershipCandidates.map(async (u) => ({ u, ok: await headOk(u) })));
       const reachable = probes.filter((p) => p.ok).map((p) => p.u);
@@ -547,16 +547,27 @@ Deno.serve(async (req) => {
         } catch { /* ignore */ }
       }
 
-      const teamPrompt = "Extract ONLY senior executives and board members from this page (CEO/VD, CFO, COO, CTO, CMO, CIO, CRO, CCO, President, Managing Director, Chairman/Ordförande, Founder/Grundare, Owner/Ägare, Partner, Head of <department>, Director, VP). Skip junior staff, sales reps, support, developers, consultants without titles. Return JSON: { people: [{ full_name, role_title, department, email }] }. Only include real people whose role_title clearly matches a leadership / C-level / board position.";
+      const teamPromptBase = "Extract ONLY senior executives and board members from this page (CEO/VD, CFO, COO, CTO, CMO, CIO, CRO, CCO, President, Managing Director, Chairman/Ordförande, Founder/Grundare, Owner/Ägare, Partner, Head of <department>, Director, VP). Skip junior staff, sales reps, support, developers, consultants without titles. Return JSON: { people: [{ full_name, role_title, department, email }] }. Only include real people whose role_title clearly matches a leadership / C-level / board position.";
+      // Target-role jobs: steer the LLM towards the selected roles first.
+      const teamPrompt = opt.targetRoles.length > 0
+        ? `${teamPromptBase} PRIORITY: we specifically want people in these roles: ${TITLE_GROUPS.filter((g) => opt.targetRoles.includes(g.id)).map((g) => g.label).join(", ")}. Extract every person holding such a title first.`
+        : teamPromptBase;
 
       for (const url of picked) {
         if (remaining() <= 0 || counter.llmCalls >= 2) break;
         const r = await firecrawlScrape(url, apiKey, counter, { jsonPrompt: teamPrompt });
         const ex = extractFromPage({ url, ...r }, root);
-        // Server-side filter: only keep people whose role_title matches the decision-maker regex.
-        ex.people = ex.people.filter((p) => isDecisionMaker(p.role_title));
+        // Server-side filter: keep decision-makers plus people in the job's target roles.
+        ex.people = ex.people.filter((p) => keepPerson(p.role_title));
         mergeExtract(acc, ex);
         await recordPage(url, ex);
+        // Early stop: once a target-role person has an email, skip remaining pages (saves credits).
+        if ((opt.onePersonPerCompany || opt.targetRoles.length > 0) && hasTargetWithEmail()) {
+          log("success", `Early stop for ${domain}: target person with email found — skipping remaining pages`, {
+            event: "early_stop_target", company_id: companyId, host: domain, firecrawl_calls: counter.calls,
+          });
+          break;
+        }
       }
     }
 
@@ -627,9 +638,10 @@ Deno.serve(async (req) => {
     });
     // Cap persisted people per company — large team pages otherwise flood a
     // company with dozens of rows. Ranked: decision-makers first, email first.
+    // onePersonPerCompany: the final pick happens after the email match-pass, keep everyone until then.
     const MAX_PEOPLE_PER_COMPANY = 5;
     const MAX_SYNTHESIZED_PER_COMPANY = 3;
-    const ranked = rankPeople(dedup).slice(0, MAX_PEOPLE_PER_COMPANY);
+    let ranked = opt.onePersonPerCompany ? rankPeople(dedup) : rankPeople(dedup).slice(0, MAX_PEOPLE_PER_COMPANY);
 
     // Match-pass: link extracted person emails to people by name
     const personEmails = Array.from(acc.emails).filter((e) => {
@@ -654,6 +666,27 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Final selection for target-role / one-person-per-company jobs (after email matching).
+    if (opt.onePersonPerCompany && ranked.length > 1) {
+      const confVal = (p: (typeof ranked)[number]): number => {
+        const c = (p as any)._email_confidence ?? (p.email ? "extracted" : null);
+        return c === "extracted" ? 3 : c === "matched_high" ? 2 : c === "matched_low" ? 1 : 0;
+      };
+      ranked = [...ranked].sort((a, b) => {
+        const t = (satisfiedBy(b.role_title) ? 1 : 0) - (satisfiedBy(a.role_title) ? 1 : 0);
+        if (t) return t;
+        const d = (isDecisionMaker(b.role_title) ? 1 : 0) - (isDecisionMaker(a.role_title) ? 1 : 0);
+        if (d) return d;
+        const e = (b.email ? 1 : 0) - (a.email ? 1 : 0);
+        if (e) return e;
+        return confVal(b) - confVal(a);
+      }).slice(0, 1);
+    } else if (opt.targetRoles.length > 0) {
+      // Prefer people in the selected roles; keep best decision-makers as fallback when none match.
+      const matches = ranked.filter((p) => matchesTitleGroups(p.role_title, opt.targetRoles));
+      if (matches.length > 0) ranked = matches;
+    }
+
     if (opt.personNames) {
       for (const p of ranked) {
         const decision = isDecisionMaker(p.role_title);
@@ -675,9 +708,11 @@ Deno.serve(async (req) => {
 
     // Synthesize person rows for unmatched person_high emails (no name on page, but we have the address)
     if (opt.personNames) {
+      // One-person-per-company jobs: synthesize at most 1 row, and only when no titled person was saved.
+      const synthCap = opt.onePersonPerCompany ? (inserted.people > 0 ? 0 : 1) : MAX_SYNTHESIZED_PER_COMPANY;
       let synthesizedCount = 0;
       for (const e of personEmails) {
-        if (synthesizedCount >= MAX_SYNTHESIZED_PER_COMPANY) break;
+        if (synthesizedCount >= synthCap) break;
         if (consumedEmails.has(e)) continue;
         if (classifyEmail(e) !== "person_high") continue;
         const lt = emailLocalTokens(e);
