@@ -13,6 +13,7 @@
 // People cap: max 5 ranked people per company (+ max 3 synthesized from emails).
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
+import { TITLE_GROUPS, matchesTitleGroups } from "../_shared/titleGroups.ts";
 
 const FIRECRAWL_V2 = "https://api.firecrawl.dev/v2";
 
@@ -362,7 +363,15 @@ Deno.serve(async (req) => {
       phones: options?.phones ?? true,
       contactForms: options?.contactForms ?? true,
       personNames: options?.personNames ?? true,
+      targetRoles: (Array.isArray(options?.targetRoles) ? options.targetRoles : []) as string[],
+      onePersonPerCompany: options?.onePersonPerCompany === true,
     };
+    // Target-role matching: strict group match when roles are selected, else any decision-maker.
+    const satisfiedBy = (role?: string | null): boolean =>
+      opt.targetRoles.length > 0 ? matchesTitleGroups(role, opt.targetRoles) : isDecisionMaker(role);
+    // Extraction filter: decision-makers plus selected target groups (fallback people survive).
+    const keepPerson = (role?: string | null): boolean =>
+      isDecisionMaker(role) || matchesTitleGroups(role, opt.targetRoles);
 
     const counter: Counter = { calls: 0, llmCalls: 0 };
     const log = (level: string, message: string, meta?: any) => {
@@ -413,6 +422,41 @@ Deno.serve(async (req) => {
           log("success", `Cache-hit on ${domain} — copied ${copied} contacts from sibling (0 credits)`, {
             event: "cache_hit", company: companyName, company_id: companyId, host: domain, copied,
           });
+          // Target-role / one-per-company jobs: also copy the best matching person from siblings.
+          if (opt.targetRoles.length > 0 || opt.onePersonPerCompany) {
+            try {
+              const { data: sibPeople } = await supabase
+                .from("contact_people")
+                .select("full_name, role_title, department, email, email_confidence, is_decision_maker, source_url")
+                .in("company_id", siblingIds)
+                .limit(200);
+              const list = (sibPeople ?? []) as any[];
+              if (list.length > 0) {
+                const confRank = (c: string | null) => c === "extracted" ? 3 : c === "matched_high" ? 2 : c === "matched_low" ? 1 : 0;
+                list.sort((a, b) => {
+                  const t = (satisfiedBy(b.role_title) ? 1 : 0) - (satisfiedBy(a.role_title) ? 1 : 0);
+                  if (t) return t;
+                  const d = (b.is_decision_maker ? 1 : 0) - (a.is_decision_maker ? 1 : 0);
+                  if (d) return d;
+                  const e = (b.email ? 1 : 0) - (a.email ? 1 : 0);
+                  if (e) return e;
+                  return confRank(b.email_confidence) - confRank(a.email_confidence);
+                });
+                const best = list[0];
+                const { error } = await supabase.from("contact_people").insert({
+                  company_id: companyId, crawl_job_id: jobId ?? null,
+                  full_name: best.full_name, role_title: best.role_title ?? null,
+                  department: best.department ?? null, source_url: best.source_url,
+                  is_decision_maker: best.is_decision_maker ?? false,
+                  email: best.email ?? null, email_confidence: best.email_confidence ?? null,
+                });
+                if (!error) log("info", `Copied person ${best.full_name} from domain cache`, {
+                  event: "person_cache_copy", company_id: companyId, host: domain,
+                  person: best.full_name, role: best.role_title ?? null,
+                });
+              }
+            } catch { /* non-fatal */ }
+          }
           return new Response(JSON.stringify({
             domain, pages: 0, emails_found: 0, person_emails: 0, people_extracted: 0,
             synthesized: 0, cached: true, copied, firecrawl_calls: 0,
@@ -441,6 +485,24 @@ Deno.serve(async (req) => {
 
     const HARD_CAP = 6;
     const remaining = () => HARD_CAP - counter.calls;
+
+    // Early-stop check: a target-role person with an email (LLM-linked or name-matched) found?
+    const hasTargetWithEmail = (): boolean => {
+      const seenNames = new Set<string>();
+      const personMails = Array.from(acc.emails).filter((e) => {
+        const c = classifyEmail(e);
+        return (c === "person_high" || c === "person_low") && rootDomain(emailHost(e)) === root;
+      });
+      for (const p of acc.people) {
+        const k = p.full_name.toLowerCase();
+        if (seenNames.has(k)) continue;
+        seenNames.add(k);
+        if (!satisfiedBy(p.role_title)) continue;
+        if (p.email) return true;
+        if (personMails.some((e) => emailMatchesName(e, p.full_name))) return true;
+      }
+      return false;
+    };
 
     // ──── Tier 1: contact page ────
     if (remaining() > 0) {

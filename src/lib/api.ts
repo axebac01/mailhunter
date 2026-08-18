@@ -55,6 +55,8 @@ export interface JobRow {
   collectPersonRoles: boolean;
   collectDepartments: boolean;
   deduplicate: boolean;
+  targetRoles: string[];
+  onePersonPerCompany: boolean;
   notes: string | null;
   progress: number;
   companiesFound: number;
@@ -196,6 +198,8 @@ const mapJob = (r: DB["crawl_jobs"]["Row"]): JobRow => ({
   collectPersonRoles: r.include_contact_person_roles,
   collectDepartments: r.include_departments,
   deduplicate: r.deduplicate,
+  targetRoles: r.target_roles ?? [],
+  onePersonPerCompany: r.one_person_per_company ?? false,
   notes: r.notes,
   progress: r.progress,
   companiesFound: r.companies_found,
@@ -386,6 +390,8 @@ export const api = {
       include_contact_person_roles: orig.collectPersonRoles,
       include_departments: orig.collectDepartments,
       deduplicate: orig.deduplicate,
+      target_roles: orig.targetRoles.length > 0 ? orig.targetRoles : null,
+      one_person_per_company: orig.onePersonPerCompany,
       notes: orig.notes,
       status: "draft",
       source_type: orig.sourceType,
