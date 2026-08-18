@@ -1,33 +1,34 @@
 // Tiered, credit-frugal email + decision-maker extraction for a single company.
 // People-first model: every person row (contact_people) holds name + role + email + phone
 // together. Generic info@/sales@ + phone stay in contacts as company-level fallback.
+//
+// DATA-INTEGRITY RULES (never violate):
+//   • Never guess or construct addresses (no fornamn.efternamn@domain synthesis).
+//   • A person's email is only saved when the address appears verbatim on the page.
+//   • A person's name must appear verbatim in the page text (LLM output cross-checked).
+//   • Person addresses with no name on the page → nameless person_email contacts,
+//     never fabricated person rows.
+//   • Every address is validated: format, company-domain ownership, MX record.
+//
 // Pipeline:
 //   0. Domain-cache: copy generic contacts from sibling with same domain (0 credits)
 //   1. Tier 1: scrape canonical /kontakt page (1 credit). Regex emails/phones/forms.
 //   2. Tier 2 (always when personNames): up to 2 leadership pages with JSON-extract.
 //      Server-side filter keeps only decision-maker roles.
 //   3. Tier 3 (only if 0 emails AND 0 people): map(limit 30) + scrape best link.
-//   4. Match-pass: link extracted person_high emails to people by name (firstname.lastname@).
-//      Unmatched person_high → synthesize person row with derived name + matched_high.
 // Hard cap: 6 Firecrawl calls + 2 LLM-extracts per company.
-// People cap: max 5 ranked people per company (+ max 3 synthesized from emails).
+// People cap: max 5 ranked people per company.
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 import { TITLE_GROUPS, matchesTitleGroups } from "../_shared/titleGroups.ts";
+import { EMAIL_FORMAT_RE, ROLE_PREFIXES, isRoleAddress, hasMxRecord } from "../_shared/emailIntegrity.ts";
 
 const FIRECRAWL_V2 = "https://api.firecrawl.dev/v2";
 
 // ─────────────────────────── classification helpers ──────────────────────────
 
-const GENERIC_PREFIXES = new Set([
-  "info","sales","contact","hello","support","office","admin","help","service","services",
-  "team","mail","email","press","media","marketing","pr","jobs","careers","career","hr",
-  "recruiting","recruitment","kontakt","kundtjanst","kundservice","post","booking","reception",
-  "noreply","no-reply","do-not-reply","donotreply","newsletter","billing","invoice","invoices",
-  "accounts","accounting","finance","legal","privacy","gdpr","dpo","security","abuse",
-  "webmaster","postmaster","hostmaster","enquiries","enquiry","inquiry","inquiries","general",
-  "welcome","feedback","orders","order","shop","store","customerservice","customer-service",
-]);
+// Role/function mailbox prefixes (info@, vd@, …) — single source of truth in _shared.
+const GENERIC_PREFIXES = ROLE_PREFIXES;
 
 const FIRST_NAMES = new Set([
   "anna","maria","lena","karin","eva","sara","emma","linda","jenny","malin","sofia","johanna","kristin","camilla","julia","elin","ida","hanna","matilda","ebba","alice","alma","wilma","stella","ella","lisa","kim","therese","frida","klara","cecilia","annika","helena","marie","ann","monica","ulla","ingrid","gunilla","kerstin","birgitta","margareta","elisabeth",
@@ -233,6 +234,7 @@ function extractFromPage(page: { url: string; markdown?: string; html?: string; 
   for (const e of found) {
     const host = emailHost(e);
     if (!host) continue;
+    if (!EMAIL_FORMAT_RE.test(e)) continue; // strict format: ^[^\s@]+@[^\s@]+\.[a-z]{2,}$
     if (JUNK_DOMAINS.some((j) => host === j || host.endsWith("." + j))) continue;
     if (rootDomain(host) !== root) continue;
     if (e.includes("..") || e.length > 80) continue;
@@ -259,11 +261,19 @@ function extractFromPage(page: { url: string; markdown?: string; html?: string; 
   for (const p of ppl) {
     const name = String(p?.full_name ?? "").trim();
     if (!name || name.length > 100 || !/\s/.test(name)) continue;
+    // Never store placeholders/templates ([Name of CFO], "Name Surname", N/A, …).
+    if (PLACEHOLDER_NAME_RE.test(name)) continue;
+    // Never store a name that is not actually on the page (LLM hallucination guard).
+    if (!nameAppearsInText(name, page.markdown, cleanHtml)) continue;
+    // An LLM-returned email is only accepted when the exact address was found on
+    // the page by the verbatim extractors above — never trust the LLM alone.
+    const llmEmail = p?.email && String(p.email).includes("@") ? String(p.email).toLowerCase().trim() : undefined;
+    const verifiedEmail = llmEmail && out.emails.has(llmEmail) ? llmEmail : undefined;
     out.people.push({
       full_name: name,
       role_title: p?.role_title ? String(p.role_title).slice(0, 120) : undefined,
       department: p?.department ? String(p.department).slice(0, 80) : undefined,
-      email: p?.email && String(p.email).includes("@") ? String(p.email).toLowerCase() : undefined,
+      email: verifiedEmail,
       source_url: page.url,
     });
   }
@@ -292,49 +302,20 @@ function rankPeople(people: PageExtract["people"]): PageExtract["people"] {
 
 // ─────────────────────────── name<->email matching ───────────────────────────
 
-function normalizeNameToken(s: string): string {
-  return s.toLowerCase()
+// ─────────────────────────── person-name integrity guards ────────────────────
+
+// Placeholder / template patterns that must never be stored as a person name.
+const PLACEHOLDER_NAME_RE = /([\[\]{}<>]|\b(name\s+surname|first\s+last|fornamn\s+efternamn|full\s*name|cfo\s+name|ceo\s+name|name\s+of\s+\w+|n\/a|okänd|okand|unknown|tba|tbd)\b)/i;
+
+// A name is only accepted when it appears verbatim in the page text the LLM read.
+// This kills hallucinated executives that were never on the page.
+function nameAppearsInText(fullName: string, ...texts: (string | undefined)[]): boolean {
+  const clean = (s: string) => s.toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z]/g, "");
-}
-
-function nameTokens(fullName: string): string[] {
-  return fullName.split(/\s+/).map(normalizeNameToken).filter((t) => t.length >= 2);
-}
-
-// Try to derive [first, last] candidate tokens from an email local-part.
-function emailLocalTokens(email: string): { first: string; last: string } | null {
-  const local = email.split("@")[0]?.toLowerCase() ?? "";
-  // firstname.lastname / firstname_lastname / firstname-lastname
-  const m = local.match(/^([a-z]{2,})[._-]([a-z]{2,})$/);
-  if (m) return { first: m[1], last: m[2] };
-  return null;
-}
-
-// Score how well an email matches a person's name. >0 = match.
-function emailMatchesName(email: string, fullName: string): "high" | "low" | null {
-  const tokens = nameTokens(fullName);
-  if (tokens.length < 1) return null;
-  const first = tokens[0];
-  const last = tokens[tokens.length - 1];
-  const lt = emailLocalTokens(email);
-  if (lt) {
-    if (lt.first === first && lt.last === last) return "high";
-    if ((lt.first === first && lt.last.length >= 2 && last.startsWith(lt.last)) ||
-        (lt.last === last && lt.first.length >= 2 && first.startsWith(lt.first))) return "high";
-    return null;
-  }
-  // single-token local: firstname or flast / lastf / fl
-  const local = email.split("@")[0]?.toLowerCase() ?? "";
-  if (local === first) return "low";
-  if (local === `${first[0]}${last}` || local === `${first}${last[0]}`) return "low";
-  return null;
-}
-
-// Title-case a derived name like "anna.svensson" → "Anna Svensson"
-function titleCaseName(first: string, last: string): string {
-  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-  return `${cap(first)} ${cap(last)}`;
+    .replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ");
+  const haystack = clean(texts.filter(Boolean).join("\n"));
+  const needle = clean(fullName).trim();
+  return needle.length >= 3 && haystack.includes(needle);
 }
 
 // ─────────────────────────── handler ─────────────────────────────────────────
@@ -427,12 +408,14 @@ Deno.serve(async (req) => {
             try {
               const { data: sibPeople } = await supabase
                 .from("contact_people")
-                .select("full_name, role_title, department, email, email_confidence, is_decision_maker, source_url")
+                .select("full_name, role_title, department, email, email_confidence, email_type, email_status, is_decision_maker, source_url")
                 .in("company_id", siblingIds)
                 .limit(200);
-              const list = (sibPeople ?? []) as any[];
+              // Legacy fabricated rows (name guessed from the address) are never copied.
+              const list = ((sibPeople ?? []) as any[])
+                .filter((p) => p.email_confidence !== "matched_high" && p.email_confidence !== "matched_low");
               if (list.length > 0) {
-                const confRank = (c: string | null) => c === "extracted" ? 3 : c === "matched_high" ? 2 : c === "matched_low" ? 1 : 0;
+                const confRank = (c: string | null) => c === "extracted" ? 1 : 0;
                 list.sort((a, b) => {
                   const t = (satisfiedBy(b.role_title) ? 1 : 0) - (satisfiedBy(a.role_title) ? 1 : 0);
                   if (t) return t;
@@ -449,6 +432,7 @@ Deno.serve(async (req) => {
                   department: best.department ?? null, source_url: best.source_url,
                   is_decision_maker: best.is_decision_maker ?? false,
                   email: best.email ?? null, email_confidence: best.email_confidence ?? null,
+                  email_type: best.email_type ?? null, email_status: best.email_status ?? null,
                 });
                 if (!error) log("info", `Copied person ${best.full_name} from domain cache`, {
                   event: "person_cache_copy", company_id: companyId, host: domain,
@@ -459,7 +443,7 @@ Deno.serve(async (req) => {
           }
           return new Response(JSON.stringify({
             domain, pages: 0, emails_found: 0, person_emails: 0, people_extracted: 0,
-            synthesized: 0, cached: true, copied, firecrawl_calls: 0,
+            cached: true, copied, firecrawl_calls: 0,
           }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
       }
@@ -486,20 +470,16 @@ Deno.serve(async (req) => {
     const HARD_CAP = 6;
     const remaining = () => HARD_CAP - counter.calls;
 
-    // Early-stop check: a target-role person with an email (LLM-linked or name-matched) found?
+    // Early-stop check: a target-role person with a page-verified email found?
+    // (emails on people are only set when the address appears verbatim on the page)
     const hasTargetWithEmail = (): boolean => {
       const seenNames = new Set<string>();
-      const personMails = Array.from(acc.emails).filter((e) => {
-        const c = classifyEmail(e);
-        return (c === "person_high" || c === "person_low") && rootDomain(emailHost(e)) === root;
-      });
       for (const p of acc.people) {
         const k = p.full_name.toLowerCase();
         if (seenNames.has(k)) continue;
         seenNames.add(k);
         if (!satisfiedBy(p.role_title)) continue;
         if (p.email) return true;
-        if (personMails.some((e) => emailMatchesName(e, p.full_name))) return true;
       }
       return false;
     };
@@ -592,16 +572,28 @@ Deno.serve(async (req) => {
     }
 
     // ──── Persist ────
-    // People-first model:
+    // People-first model (strict integrity):
     //   • generic emails + phones + forms  → contacts (company-level fallback)
-    //   • person_high/person_low emails    → matched onto contact_people.email (skip contacts)
-    //   • unmatched person_high            → synthesize a new contact_people row
-    let inserted = { contacts: 0, people: 0, person_emails: 0, synthesized: 0 };
+    //   • contact_people rows              → name + role + verbatim-verified email only
+    //   • nameless person-pattern emails   → contacts (contact_type person_email)
+    // No fabricated names. No guessed addresses. No placeholders.
+    let inserted = { contacts: 0, people: 0, person_emails: 0 };
+
+    // MX-record gate: a domain that cannot receive mail invalidates every
+    // address on it. Cached per domain across all jobs via domain_mx_cache.
+    const domainAcceptsMail = acc.emails.size > 0 ? await hasMxRecord(domain, supabase) : false;
+    if (acc.emails.size > 0 && !domainAcceptsMail) {
+      log("warn", `Dropped ${acc.emails.size} address(es) on ${domain} — domain has no MX record`, {
+        event: "mx_failed", company_id: companyId, host: domain, dropped: acc.emails.size,
+      });
+    }
+    const keepEmail = (_e: string) => domainAcceptsMail;
 
     // Generic emails → contacts
     if (opt.genericEmails) {
       for (const e of acc.emails) {
         if (classifyEmail(e) !== "generic") continue;
+        if (!keepEmail(e)) continue;
         const { error } = await supabase.from("contacts").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
           contact_type: "generic_email",
@@ -638,40 +630,16 @@ Deno.serve(async (req) => {
     });
     // Cap persisted people per company — large team pages otherwise flood a
     // company with dozens of rows. Ranked: decision-makers first, email first.
-    // onePersonPerCompany: the final pick happens after the email match-pass, keep everyone until then.
+    // onePersonPerCompany: the final pick happens below, keep everyone until then.
     const MAX_PEOPLE_PER_COMPANY = 5;
-    const MAX_SYNTHESIZED_PER_COMPANY = 3;
     let ranked = opt.onePersonPerCompany ? rankPeople(dedup) : rankPeople(dedup).slice(0, MAX_PEOPLE_PER_COMPANY);
 
-    // Match-pass: link extracted person emails to people by name
-    const personEmails = Array.from(acc.emails).filter((e) => {
-      const c = classifyEmail(e);
-      return (c === "person_high" || c === "person_low") && rootDomain(emailHost(e)) === root;
-    });
-    const consumedEmails = new Set<string>();
-    for (const p of ranked) {
-      if (p.email) continue; // LLM already linked it (confidence=extracted)
-      // Prefer high-conf match
-      let best: { email: string; conf: "high"|"low" } | null = null;
-      for (const e of personEmails) {
-        if (consumedEmails.has(e)) continue;
-        const score = emailMatchesName(e, p.full_name);
-        if (score === "high") { best = { email: e, conf: "high" }; break; }
-        if (score === "low" && !best) best = { email: e, conf: "low" };
-      }
-      if (best) {
-        p.email = best.email;
-        (p as any)._email_confidence = best.conf === "high" ? "matched_high" : "matched_low";
-        consumedEmails.add(best.email);
-      }
-    }
+    // NO name→email guessing pass. A person keeps only the email that the
+    // verbatim extractor already confirmed on the page (see extractFromPage).
 
-    // Final selection for target-role / one-person-per-company jobs (after email matching).
+    // Final selection for target-role / one-person-per-company jobs.
     if (opt.onePersonPerCompany && ranked.length > 1) {
-      const confVal = (p: (typeof ranked)[number]): number => {
-        const c = (p as any)._email_confidence ?? (p.email ? "extracted" : null);
-        return c === "extracted" ? 3 : c === "matched_high" ? 2 : c === "matched_low" ? 1 : 0;
-      };
+      const confVal = (p: (typeof ranked)[number]): number => (p.email ? 3 : 0);
       ranked = [...ranked].sort((a, b) => {
         const t = (satisfiedBy(b.role_title) ? 1 : 0) - (satisfiedBy(a.role_title) ? 1 : 0);
         if (t) return t;
@@ -690,43 +658,40 @@ Deno.serve(async (req) => {
     if (opt.personNames) {
       for (const p of ranked) {
         const decision = isDecisionMaker(p.role_title);
-        const conf = (p as any)._email_confidence
-          ?? (p.email ? "extracted" : null);
+        const email = p.email && keepEmail(p.email) ? p.email : null;
         const { error } = await supabase.from("contact_people").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
           full_name: p.full_name, role_title: p.role_title ?? null, department: p.department ?? null,
           source_url: p.source_url, is_decision_maker: decision,
-          email: p.email ?? null,
-          email_confidence: conf,
+          email,
+          email_confidence: email ? "extracted" : null,
+          email_type: email ? (isRoleAddress(email) ? "role" : "personal") : null,
+          // Found verbatim on the company's own website + domain MX-checked.
+          email_status: email ? "verified" : null,
         });
         if (!error) {
           inserted.people++;
-          if (p.email) inserted.person_emails++;
+          if (email) inserted.person_emails++;
         }
       }
     }
 
-    // Synthesize person rows for unmatched person_high emails (no name on page, but we have the address)
-    if (opt.personNames) {
-      // One-person-per-company jobs: synthesize at most 1 row, and only when no titled person was saved.
-      const synthCap = opt.onePersonPerCompany ? (inserted.people > 0 ? 0 : 1) : MAX_SYNTHESIZED_PER_COMPANY;
-      let synthesizedCount = 0;
-      for (const e of personEmails) {
-        if (synthesizedCount >= synthCap) break;
-        if (consumedEmails.has(e)) continue;
-        if (classifyEmail(e) !== "person_high") continue;
-        const lt = emailLocalTokens(e);
-        if (!lt) continue;
-        const fullName = titleCaseName(lt.first, lt.last);
-        const { error } = await supabase.from("contact_people").insert({
+    // Person-pattern emails found verbatim on the page but with NO name on the
+    // page are kept as nameless company-level contacts — never turned into
+    // fabricated person rows.
+    if (opt.genericEmails) {
+      for (const e of acc.emails) {
+        const c = classifyEmail(e);
+        if (c !== "person_high" && c !== "person_low") continue;
+        if (!keepEmail(e)) continue;
+        // Skip addresses already stored on a person row (verbatim-linked).
+        if (ranked.some((p) => p.email === e)) continue;
+        const { error } = await supabase.from("contacts").insert({
           company_id: companyId, crawl_job_id: jobId ?? null,
-          full_name: fullName, role_title: null, department: null,
-          source_url: acc.emailSources.get(e) ?? `https://${domain}`,
-          is_decision_maker: false,
-          email: e,
-          email_confidence: "matched_high",
+          contact_type: "person_email",
+          value: e, source_url: acc.emailSources.get(e) ?? `https://${domain}`,
         });
-        if (!error) { inserted.people++; inserted.person_emails++; inserted.synthesized++; synthesizedCount++; }
+        if (!error) { inserted.contacts++; inserted.person_emails++; }
       }
     }
 
@@ -747,7 +712,6 @@ Deno.serve(async (req) => {
         event: "emails_found", company: companyName, company_id: companyId, host: domain,
         person_emails: inserted.person_emails,
         generic_emails: inserted.contacts - inserted.person_emails - acc.phones.size - acc.forms.size,
-        synthesized: inserted.synthesized,
         samples: [...personSamples, ...genericSamples].slice(0, 3),
         firecrawl_calls: counter.calls,
       });
@@ -766,7 +730,6 @@ Deno.serve(async (req) => {
       emails_found: acc.emails.size,
       person_emails: inserted.person_emails,
       people_extracted: inserted.people,
-      synthesized: inserted.synthesized,
       firecrawl_calls: counter.calls,
       llm_calls: counter.llmCalls,
     };
