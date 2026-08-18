@@ -241,11 +241,13 @@ export type Database = {
           meta_json: Json | null
           name: string
           notes: string | null
+          one_person_per_company: boolean
           pages_crawled: number
           people_found: number
           progress: number
           source_type: Database["public"]["Enums"]["source_type"]
           status: Database["public"]["Enums"]["job_status"]
+          target_roles: string[] | null
           updated_at: string
         }
         Insert: {
@@ -272,11 +274,13 @@ export type Database = {
           meta_json?: Json | null
           name: string
           notes?: string | null
+          one_person_per_company?: boolean
           pages_crawled?: number
           people_found?: number
           progress?: number
           source_type?: Database["public"]["Enums"]["source_type"]
           status?: Database["public"]["Enums"]["job_status"]
+          target_roles?: string[] | null
           updated_at?: string
         }
         Update: {
@@ -303,11 +307,13 @@ export type Database = {
           meta_json?: Json | null
           name?: string
           notes?: string | null
+          one_person_per_company?: boolean
           pages_crawled?: number
           people_found?: number
           progress?: number
           source_type?: Database["public"]["Enums"]["source_type"]
           status?: Database["public"]["Enums"]["job_status"]
+          target_roles?: string[] | null
           updated_at?: string
         }
         Relationships: []
