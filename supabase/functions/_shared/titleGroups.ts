@@ -7,15 +7,17 @@ export interface TitleGroup {
   re: RegExp;
 }
 
+// Preset title groups; case-insensitive matching against the raw role_title
+// (values are messy free text like "Partner, Corporate Finance" or "CEO/VD").
 export const TITLE_GROUPS: TitleGroup[] = [
-  { id: "ceo", label: "CEO / VD / Managing Director", re: /\b(ceo|chief executive officer|vd|verkställande direktör|managing director|md)\b/i },
-  { id: "cfo", label: "CFO / Ekonomichef", re: /\b(cfo|chief financial officer|ekonomichef|finance director|financial director)\b/i },
-  { id: "c_level", label: "Other C-level (COO, CTO, CMO…)", re: /\b(c[a-z]o|chief [a-z ]+ officer)\b/i },
-  { id: "founder", label: "Founder / Grundare", re: /\b(founder|co-?founder|grundare|medgrundare|stiftare)\b/i },
-  { id: "owner", label: "Owner / Ägare", re: /\b(ägare|delägare|owner|co-?owner|proprietor)\b/i },
+  { id: "ceo", label: "CEO / VD / Managing Director", re: /\b(ceo|c\.e\.o|vd|verkst[äa]llande\s+direkt[öo]r|managing\s+director|md|president)\b/i },
+  { id: "cfo", label: "CFO / Ekonomichef", re: /\b(cfo|chief\s+financial\s+officer|ekonomichef|ekonomidirekt[öo]r|finance\s+director|head\s+of\s+finance)\b/i },
+  { id: "clevel", label: "COO / CTO / CMO & other C-level", re: /\b(coo|cto|cmo|cio|cro|cco|chief\s+\w+\s+officer)\b/i },
+  { id: "founder", label: "Founder / Grundare", re: /\b(founder|co[-\s]?founder|grundare)\b/i },
+  { id: "owner", label: "Owner / Ägare / Delägare", re: /\b(owner|co[-\s]?owner|[äa]gare|del[äa]gare)\b/i },
   { id: "partner", label: "Partner", re: /\bpartner\b/i },
-  { id: "chair", label: "Chairman / Styrelseordförande", re: /\b(chairman|chairwoman|chairperson|chair of( the)? board|styrelseordförande|ordförande)\b/i },
-  { id: "head_director", label: "Head of / Director / VP", re: /\b(head of|chef för|director|vp\b|vice president|vice vd)\b/i },
+  { id: "chair", label: "Chairman / Styrelseordförande", re: /\b(chairman|chairwoman|styrelseordf[öo]rande)\b/i },
+  { id: "head", label: "Head of / Director / VP", re: /\b(head\s+of|director|vp|vice\s+president)\b/i },
 ];
 
 export function titleGroupsByIds(ids: string[]): TitleGroup[] {
