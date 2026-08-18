@@ -24,13 +24,12 @@ export const CONTACT_EXPORT_FIELDS = [
   "job_name", "import_status",
 ] as const;
 
+// Data contract for people exports: only sourced, verified data. Empty fields
+// are empty strings — never "N/A", "-", or placeholders.
 export const PEOPLE_EXPORT_FIELDS = [
-  "company_name", "website", "domain", "country", "industry",
-  "first_name", "last_name", "full_name",
-  "role_title", "department",
-  "email", "email_confidence", "phone",
-  "source_url", "found_at",
-  "job_name", "import_status",
+  "company", "website",
+  "full_name", "first_name", "last_name", "role",
+  "email", "email_type", "email_status", "email_confidence", "email_source",
 ] as const;
 
 function splitName(full: string | null | undefined): { first: string; last: string } {
@@ -59,24 +58,20 @@ export function projectContactRow(c: ContactRow) {
 
 export function projectPersonRow(p: PersonRow) {
   const { first, last } = splitName(p.fullName);
+  // Final gate before export: a row with an unverifiable name is dropped by
+  // filterPeopleForExport callers; here we never invent anything — blanks stay blank.
   return {
-    company_name: p.companyName,
+    company: p.companyName === "—" ? "" : p.companyName,
     website: p.domain ? `https://www.${p.domain}` : "",
-    domain: p.domain ?? "",
-    country: p.country ?? "",
-    industry: p.industry ?? "",
+    full_name: p.fullName,
     first_name: first,
     last_name: last,
-    full_name: p.fullName,
-    role_title: p.roleTitle ?? "",
-    department: p.department ?? "",
+    role: p.roleTitle ?? "",
     email: p.email ?? "",
-    email_confidence: p.emailConfidence ?? "",
-    phone: p.phone ?? "",
-    source_url: p.sourceUrl,
-    found_at: p.foundAt,
-    job_name: p.jobName ?? "",
-    import_status: p.importId ? "imported" : "discovered",
+    email_type: p.email ? (p.emailType ?? "") : "",
+    email_status: p.email ? (p.emailStatus ?? "unverified") : "",
+    email_confidence: p.email ? (p.emailStatus === "verified" ? "1" : "0.5") : "",
+    email_source: p.email ? p.sourceUrl : "",
   };
 }
 
@@ -101,8 +96,8 @@ export interface PeopleFilterOptions {
 }
 
 function personRankScore(p: PersonRow): number {
-  const conf = p.emailConfidence === "extracted" ? 3 : p.emailConfidence === "matched_high" ? 2 : p.emailConfidence === "matched_low" ? 1 : 0;
-  return (p.isDecisionMaker ? 100 : 0) + (p.email ? 10 : 0) + conf;
+  const status = p.emailStatus === "verified" ? 2 : p.email ? 1 : 0;
+  return (p.isDecisionMaker ? 100 : 0) + (p.email ? 10 : 0) + status;
 }
 
 export function filterPeopleForExport(people: PersonRow[], opts: PeopleFilterOptions): PersonRow[] {
