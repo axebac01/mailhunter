@@ -6,7 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { api, type JobStatus, type JobMetaJson } from "@/lib/api";
 import { startSimulator, stopSimulator } from "@/lib/jobSimulator";
-import { exportJobResults, type ExportFormat, type JobExportDataset, type PeopleFilterOptions } from "@/lib/exporters";
+import { exportJobResults, titleGroupShortLabels, type ExportFormat, type JobExportDataset, type PeopleFilterOptions } from "@/lib/exporters";
 import { PageHeader } from "@/components/app/PageHeader";
 import { SectionCard } from "@/components/app/SectionCard";
 import { JobStatusBadge } from "@/components/app/StatusBadge";
@@ -294,6 +294,8 @@ export default function JobDetail() {
             <li className="flex justify-between"><span className="text-muted-foreground">Person roles</span><span>{j.collectPersonRoles ? "Yes" : "No"}</span></li>
             <li className="flex justify-between"><span className="text-muted-foreground">Departments</span><span>{j.collectDepartments ? "Yes" : "No"}</span></li>
             <li className="flex justify-between"><span className="text-muted-foreground">Deduplicate</span><span>{j.deduplicate ? "Yes" : "No"}</span></li>
+            <li className="flex justify-between"><span className="text-muted-foreground">Target roles</span><span>{j.targetRoles.length > 0 ? titleGroupShortLabels(j.targetRoles).join(", ") : "Any"}</span></li>
+            <li className="flex justify-between"><span className="text-muted-foreground">One person / company</span><span>{j.onePersonPerCompany ? "Yes" : "No"}</span></li>
           </ul>
         </SectionCard>
       </div>

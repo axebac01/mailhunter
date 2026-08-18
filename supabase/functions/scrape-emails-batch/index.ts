@@ -405,6 +405,8 @@ Deno.serve(async (req) => {
                   phones: job.include_phones,
                   contactForms: job.include_contact_forms,
                   personNames: job.include_contact_person_names,
+                  targetRoles: Array.isArray(job.target_roles) && job.target_roles.length > 0 ? job.target_roles : undefined,
+                  onePersonPerCompany: job.one_person_per_company ?? false,
                 },
               }),
               signal: ctrl.signal,
