@@ -1,27 +1,38 @@
-# Korrigerad rensningslista — adressnivå istället för radnivå
+# Ny skrapning — noll påhitt, helst 1 och max 3 personer per bolag
 
-## Felet (verifierat)
+## Verifierat: detta skydd finns redan i skraparen
 
-Rensningsfilen `bisdata-generationsskifte-att-ta-bort.csv` byggdes per databasrad. När samma mejladress fanns på både en fabricerad rad (t.ex. `matched_high`-dubblett) och en äkta extraherad rad (`extracted` på rätt domän) åkte adressen med i borttagningslistan via den fabricerade raden — trots att adressen faktiskt var publicerad. Exempel: `ewa.einerth@furuhojden.se` (VD, hittad på furuhojden.se/om-oss).
+- **Inga påhittade namn**: namn måste finnas ordagrant i sidans text; platshållare kasseras.
+- **Inga gissade mejl**: en persons adress sparas bara om den står ordagrant på sidan. Gamla gissningsvägarna (`matched_high`/`matched_low`) är borta.
+- **Validering vid lagring**: format, domän tillhör bolaget, MX-post finns.
+- **Märkning**: `email_type` (personal/role) + `email_status` (verified/unverified).
+- Batch-workern skickar med målroller och person-tak till skraparen.
 
-Omfattning: **60 av 1 588 unika adresser** i filen har en äkta extracted-rad och ska inte rensas bort.
+## Ändring som saknas: tak 5 → 3 personer per bolag
 
-## Fix
+Idag: "One person per company" ger **exakt 1**, annars sparas **upp till 5**. Inget av det är "helst 1, max 3".
 
-Generera `exports/bisdata-generationsskifte-att-ta-bort-v2.csv` ur den befintliga fulla granskningsfilen med regeln:
+- `supabase/functions/scrape-emails/index.ts`: `MAX_PEOPLE_PER_COMPANY` ändras 5 → 3.
+- Rankingen (bästa personen först: målroll → beslutsfattare → har mejl → högst konfidens) är oförändrad — den bästa sparas alltid först.
+- Tidigt stopp finns redan: hittas målrollspersonen med mejl avbryts bolaget direkt → i praktiken oftast 1 person när den rätta hittas tidigt.
+- Deploya om `scrape-emails` så det är 100 % säkert att senaste koden kör.
 
-- En adress tas bara med om **alla** rader med den adressen är fabricerade/gissade/hallucinerade.
-- Finns minst en `extracted`-rad på rätt domän (kategori `overifierad`) för samma adress → adressen stannar kvar i sekvensen.
-- Deduplicera på adress (lowercase) — en rad per adress, så verktyget kan matcha rent.
+## Så startar du den nya skrapningen
 
-Resultat (verifierade siffror): **1 528 unika adresser** att ta bort (istället för 1 588). Kolumner: `email, company, website, full_name, kategori`.
+1. Välj målroll (t.ex. VD/CEO) i formuläret → skraparen letar målmedvetet och stoppar bolaget vid träff.
+2. Välj tak:
+   - "One person per company" ikryssad = exakt 1 per bolag
+   - Urkryssad = upp till 3 per bolag (bästa först)
 
-## Bonus: lista över de räddade adresserna
+## Permanent regel
 
-Generera även `exports/bisdata-generationsskifte-raddade-adresser.csv` med de 60 adresserna som togs bort från rensningslistan (email, company, full_name, role, source) — så du kan kontrollera dem själv och vara säker på att de ligger kvar i sekvensen.
+Spara i projektminnet: aldrig fabricera namn/mejl, tomt fält före gissning, max 3 personer per bolag (helst 1).
+
+## Verifiering
+
+Efter deploy: starta ett litet testjobb (några bolag) och kontrollera i People-fliken att inget bolag har fler än 3 personer, att alla mejl har källa, och att inga platshållarnamn finns.
 
 ## Tekniska detaljer
 
-- Källa: `/mnt/documents/exports/bisdata-generationsskifte-rensad-fabricerade.csv` (2 921 rader, redan verifierad mot databasen). Ingen ny databasläsning behövs.
-- Två nya filer skrivs till `/mnt/documents/exports/` och presenteras som artefakter. Inga ändringar i databas eller kod.
-- Kommande databasstädning (steg 2 från tidigare plan) använder samma adressnivå-regel: en fabricerad rad raderas bara om adressen saknar äkta extracted-rad; annars raderas dubbletten men adressen behålls.
+- Enda kodändringen: en konstant i `scrape-emails/index.ts` (5 → 3). Ingen migration, inga andra filer.
+- Deploy via deploy-verktyget, därefter testjobb mot databasen för bekräftelse.
