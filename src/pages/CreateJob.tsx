@@ -377,7 +377,7 @@ export default function CreateJob() {
               <div>
                 <Label htmlFor="one-per-company" className="text-sm font-normal cursor-pointer">One person per company</Label>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Save only the single best person per company (target role first, then decision-maker with email) instead of up to 5.
+                  Save only the single best person per company (target role first, then decision-maker with email) instead of up to 3.
                 </p>
               </div>
             </div>

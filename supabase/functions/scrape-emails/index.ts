@@ -630,8 +630,9 @@ Deno.serve(async (req) => {
     });
     // Cap persisted people per company — large team pages otherwise flood a
     // company with dozens of rows. Ranked: decision-makers first, email first.
+    // Hard cap is 3 (user rule: "helst 1, max 3 per bolag").
     // onePersonPerCompany: the final pick happens below, keep everyone until then.
-    const MAX_PEOPLE_PER_COMPANY = 5;
+    const MAX_PEOPLE_PER_COMPANY = 3;
     let ranked = opt.onePersonPerCompany ? rankPeople(dedup) : rankPeople(dedup).slice(0, MAX_PEOPLE_PER_COMPANY);
 
     // NO name→email guessing pass. A person keeps only the email that the
