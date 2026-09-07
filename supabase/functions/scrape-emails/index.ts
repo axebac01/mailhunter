@@ -141,7 +141,17 @@ function emailHost(email: string): string {
 
 // ─────────────────────────── Firecrawl wrappers (counted) ────────────────────
 
-type Counter = { calls: number; llmCalls: number };
+type Counter = { calls: number; llmCalls: number; paymentRequired?: boolean };
+
+// Firecrawl signals an exhausted credit balance with 402 (and sometimes 429 +
+// an "insufficient credits" body). Flag it so the caller can pause the job
+// instead of silently grinding through the whole queue saving nothing.
+function flagPayment(counter: Counter, status: number, body: unknown) {
+  const text = typeof body === "string" ? body : JSON.stringify(body ?? "");
+  if (status === 402 || /insufficient credits|payment required|out of credits/i.test(text)) {
+    counter.paymentRequired = true;
+  }
+}
 
 async function firecrawlMap(domain: string, apiKey: string, counter: Counter): Promise<string[]> {
   counter.calls++;
@@ -151,7 +161,7 @@ async function firecrawlMap(domain: string, apiKey: string, counter: Counter): P
     body: JSON.stringify({ url: `https://${domain}`, limit: 30 }),
   });
   const j = await res.json().catch(() => ({}));
-  if (!res.ok) return [];
+  if (!res.ok) { flagPayment(counter, res.status, j); return []; }
   const links: string[] = Array.isArray(j?.links) ? j.links : Array.isArray(j?.data?.links) ? j.data.links : [];
   return links;
 }
@@ -169,7 +179,8 @@ async function firecrawlScrape(url: string, apiKey: string, counter: Counter, op
     body: JSON.stringify(body),
   });
   const j = await res.json().catch(() => ({}));
-  if (!res.ok) return {};
+  if (!res.ok) { flagPayment(counter, res.status, j); return {}; }
+
   return {
     markdown: j?.markdown ?? j?.data?.markdown,
     html: j?.html ?? j?.data?.html,
@@ -702,6 +713,23 @@ Deno.serve(async (req) => {
     if (jobId && counter.calls > 0) {
       await supabase.rpc("increment_firecrawl_calls", { job_id: jobId, delta: counter.calls });
     }
+
+    // Circuit breaker: Firecrawl is out of credits → pause the whole job with a
+    // clear reason instead of burning through the queue and saving nothing.
+    if (jobId && counter.paymentRequired) {
+      const { data: jrow } = await supabase.from("crawl_jobs").select("status, meta_json").eq("id", jobId).maybeSingle();
+      if (jrow?.status === "running") {
+        const meta = (jrow.meta_json as Record<string, unknown> | null) ?? {};
+        await supabase.from("crawl_jobs").update({
+          status: "paused",
+          meta_json: { ...meta, paused_reason: "firecrawl_payment_required", paused_at: new Date().toISOString() },
+        }).eq("id", jobId);
+        log("error", "Auto-paused: Firecrawl reported no remaining credits. Top up and press Start.", {
+          event: "job_paused", reason: "firecrawl_payment_required",
+        });
+      }
+    }
+
 
     // Timeline
     if (inserted.contacts > 0) {

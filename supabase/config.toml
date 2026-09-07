@@ -2,3 +2,7 @@ project_id = "yinahywakjfgqoswqbgm"
 
 [functions.send-to-outreach]
 verify_jwt = false
+
+[functions.job-watchdog]
+verify_jwt = false
+
