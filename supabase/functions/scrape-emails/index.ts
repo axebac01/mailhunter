@@ -714,6 +714,23 @@ Deno.serve(async (req) => {
       await supabase.rpc("increment_firecrawl_calls", { job_id: jobId, delta: counter.calls });
     }
 
+    // Circuit breaker: Firecrawl is out of credits → pause the whole job with a
+    // clear reason instead of burning through the queue and saving nothing.
+    if (jobId && counter.paymentRequired) {
+      const { data: jrow } = await supabase.from("crawl_jobs").select("status, meta_json").eq("id", jobId).maybeSingle();
+      if (jrow?.status === "running") {
+        const meta = (jrow.meta_json as Record<string, unknown> | null) ?? {};
+        await supabase.from("crawl_jobs").update({
+          status: "paused",
+          meta_json: { ...meta, paused_reason: "firecrawl_payment_required", paused_at: new Date().toISOString() },
+        }).eq("id", jobId);
+        log("error", "Auto-paused: Firecrawl reported no remaining credits. Top up and press Start.", {
+          event: "job_paused", reason: "firecrawl_payment_required",
+        });
+      }
+    }
+
+
     // Timeline
     if (inserted.contacts > 0) {
       const personSamples = Array.from(acc.emails).filter((e) => {
